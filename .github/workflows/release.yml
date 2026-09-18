@@ -47,10 +47,12 @@ jobs:
           # tagName / releaseName 使用触发的 tag；手动触发时用输入或当前短 SHA
           tagName: ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}
           releaseName: "SAS PWA Client ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}"
-          releaseBody: "自动构建的 SAS PWA Client 安装包（msi / nsis）。"
+          releaseBody: "自动构建的 SAS PWA Client：含安装包（msi / nsis）与便携版（单个 exe，解压即用，无需安装）。"
           releaseDraft: ${{ github.event_name == 'workflow_dispatch' }}
           prerelease: false
           # tauri-action 会自动执行 beforeBuildCommand (npm run build) 与 release 构建
           args: ""
           # 仅构建 release 产物（默认 true）
           includeRelease: true
+          # 额外上传原始 exe 作为便携版（无需安装，直接运行）
+          uploadPlainBinary: true
