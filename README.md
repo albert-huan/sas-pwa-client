@@ -51,7 +51,7 @@ Key design decisions:
 ## Requirements
 
 - **Windows** with the WebView2 Runtime (Edge Chromium).
-- **Node.js 18+** and npm (builds the settings page only).
+- **Node.js 20.19+ (or 22.12+)** and npm (builds the settings page only; Vite 8 / rolldown requires it).
 - **Rust toolchain** + [Tauri v2 prerequisites](https://tauri.app/start/prerequisites/).
 
 ---

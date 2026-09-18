@@ -25,7 +25,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: "22"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -44,7 +44,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: "."
-          configPath: "src-tauri/tauri.conf.json"
           # tagName / releaseName 使用触发的 tag；手动触发时用输入或当前短 SHA
           tagName: ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}
           releaseName: "SAS PWA Client ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}"

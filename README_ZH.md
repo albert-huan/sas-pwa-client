@@ -44,7 +44,7 @@ PWA 是远程 SAS 站点本身；本客户端只是注入脚本伪造 PWA 判定
 ## 环境要求
 
 - **Windows** + WebView2 Runtime（Edge Chromium）。
-- **Node.js 18+** 与 npm（仅用于构建设置页）。
+- **Node.js 20.19+（或 22.12+）** 与 npm（仅用于构建设置页；Vite 8 / rolldown 需要该版本）。
 - **Rust 工具链**及 [Tauri v2 前置依赖](https://tauri.app/start/prerequisites/)。
 
 ---
