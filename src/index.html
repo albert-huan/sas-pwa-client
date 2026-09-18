@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="system">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SAS 客户端 · 站点设置</title>
+    <style>
+      :root {
+        --bg: #0f1116;
+        --bg-glow: #1b2432;
+        --panel: #171a21;
+        --panel-2: #1e222b;
+        --card-2: #14171d;
+        --line: #2a2f3a;
+        --line-hover: #3a4150;
+        --text: #e7e9ee;
+        --muted: #8b93a5;
+        --accent: #4f8cff;
+        --accent-2: #2b6bff;
+        --danger: #ff5f56;
+        --ok: #35c46b;
+        --input-bg: #10131a;
+        --btn-bg: #232833;
+        --btn-hover: #2c323f;
+        --toast-bg: #222836;
+        --radius: 14px;
+      }
+      /* 明亮主题：仅覆盖变量，组件样式无需改动。 */
+      :root[data-theme="light"] {
+        --bg: #eef1f6;
+        --bg-glow: #d7e0ee;
+        --panel: #ffffff;
+        --panel-2: #f1f4f9;
+        --card-2: #f0f3f8;
+        --line: #d8dee8;
+        --line-hover: #b9c2d0;
+        --text: #1a1f29;
+        --muted: #5b6472;
+        --accent: #2b6bff;
+        --accent-2: #1f5cff;
+        --danger: #d83a2f;
+        --ok: #1a9e54;
+        --input-bg: #ffffff;
+        --btn-bg: #eef1f6;
+        --btn-hover: #e2e7ef;
+        --toast-bg: #ffffff;
+      }
+      /* 暗黑主题（与默认 :root 一致，便于理解三态）。 */
+      :root[data-theme="dark"] {
+        --bg: #0f1116;
+        --bg-glow: #1b2432;
+        --panel: #171a21;
+        --panel-2: #1e222b;
+        --card-2: #14171d;
+        --line: #2a2f3a;
+        --line-hover: #3a4150;
+        --text: #e7e9ee;
+        --muted: #8b93a5;
+        --accent: #4f8cff;
+        --accent-2: #2b6bff;
+        --danger: #ff5f56;
+        --ok: #35c46b;
+        --input-bg: #10131a;
+        --btn-bg: #232833;
+        --btn-hover: #2c323f;
+        --toast-bg: #222836;
+      }
+      /* 跟随系统（默认）：系统偏好明亮时切到明亮变量集。 */
+      @media (prefers-color-scheme: light) {
+        :root[data-theme="system"] {
+          --bg: #eef1f6;
+          --bg-glow: #d7e0ee;
+          --panel: #ffffff;
+          --panel-2: #f1f4f9;
+          --card-2: #f0f3f8;
+          --line: #d8dee8;
+          --line-hover: #b9c2d0;
+          --text: #1a1f29;
+          --muted: #5b6472;
+          --accent: #2b6bff;
+          --accent-2: #1f5cff;
+          --danger: #d83a2f;
+          --ok: #1a9e54;
+          --input-bg: #ffffff;
+          --btn-bg: #eef1f6;
+          --btn-hover: #e2e7ef;
+          --toast-bg: #ffffff;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        background: radial-gradient(1200px 600px at 10% -10%, var(--bg-glow) 0%, var(--bg) 55%);
+        color: var(--text);
+        font: 14px/1.55 "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .app {
+        max-width: 1400px;
+        min-height: 100%;
+        margin: 0 auto;
+        padding: 28px 24px 24px;
+        display: flex;
+        flex-direction: column;
+      }
+      header.top {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 22px;
+      }
+      header.top h1 {
+        font-size: 20px;
+        font-weight: 650;
+        letter-spacing: 0.2px;
+        margin: 0;
+        white-space: nowrap;
+      }
+      header.top .ver {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      header.top .spacer { flex: 1; }
+      .grid {
+        display: grid;
+        /* 左列（站点列表）随窗口在 340~420px 之间伸缩，右列吃掉剩余空间且可以收缩，
+           窗口拉宽时表单区跟着变宽，不会留下大片空白。 */
+        grid-template-columns: minmax(340px, 420px) minmax(0, 1fr);
+        gap: 18px;
+        align-items: start;
+      }
+      @media (max-width: 860px) {
+        .grid { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 720px) {
+        .row2 { grid-template-columns: 1fr; }
+      }
+      .card {
+        background: linear-gradient(180deg, var(--panel) 0%, var(--card-2) 100%);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 16px;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+      }
+      .card h2 {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: var(--muted);
+        margin: 0 0 12px;
+      }
+      .card-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .card-head h2 { margin: 0; }
+      .list { display: flex; flex-direction: column; gap: 8px; }
+      .empty {
+        color: var(--muted);
+        border: 1px dashed var(--line);
+        border-radius: 10px;
+        padding: 18px;
+        text-align: center;
+      }
+      .site {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--panel-2);
+        transition: border-color 0.15s, transform 0.15s;
+      }
+      .site:hover { border-color: var(--line-hover); }
+      .site.active { border-color: var(--accent); }
+      .site .dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: var(--ok); flex: none;
+      }
+      .site .meta { flex: 1 1 150px; min-width: 0; }
+      .site .name { font-weight: 600; }
+      .site .url {
+        color: var(--muted);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .site .badge {
+        margin-left: 8px;
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #9dc0ff;
+        background: rgba(79, 140, 255, 0.14);
+        border: 1px solid rgba(79, 140, 255, 0.45);
+      }
+      .hint {
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px dashed var(--line);
+        color: var(--muted);
+        font-size: 12px;
+      }
+      /* 表单中间的提示（如凭据状态）：不需要虚线分隔，只要一点行距。 */
+      .hint.inline {
+        margin: 0 0 14px;
+        padding: 0;
+        border-top: 0;
+      }
+      .site .acts { display: flex; flex-wrap: wrap; gap: 6px; }
+      .btn {
+        border: 1px solid var(--line);
+        background: var(--btn-bg);
+        color: var(--text);
+        padding: 7px 12px;
+        border-radius: 9px;
+        cursor: pointer;
+        font-size: 12.5px;
+        transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+      }
+      .btn:hover { background: var(--btn-hover); border-color: var(--line-hover); }
+      .btn.primary {
+        background: linear-gradient(180deg, var(--accent) 0%, var(--accent-2) 100%);
+        border-color: transparent;
+        color: #fff;
+        font-weight: 600;
+      }
+      .btn.primary:hover { filter: brightness(1.08); }
+      .btn.ghost { background: transparent; }
+      .btn.danger { color: var(--danger); }
+      .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+      .btn.sm { padding: 5px 9px; font-size: 12px; }
+      .lang-select {
+        width: auto;
+        min-width: 108px;
+        flex: none;
+        -webkit-appearance: none;
+        appearance: none;
+        padding-right: 24px;
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0l5 6 5-6z' fill='%238b93a5'/></svg>");
+        background-repeat: no-repeat;
+        background-position: right 9px center;
+      }
+      .field { margin-bottom: 12px; }
+      .field label {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 5px;
+      }
+      input[type="text"], input[type="number"] {
+        width: 100%;
+        padding: 9px 11px;
+        border-radius: 9px;
+        border: 1px solid var(--line);
+        background: var(--input-bg);
+        color: var(--text);
+        outline: none;
+        font-size: 13px;
+      }
+      input:focus { border-color: var(--accent); }
+      .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .checks { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 14px; }
+      .check {
+        display: flex; gap: 9px; align-items: flex-start;
+        padding: 9px 11px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--input-bg);
+        cursor: pointer;
+      }
+      .check input { margin-top: 2px; accent-color: var(--accent); }
+      .check .t { display: block; font-weight: 600; font-size: 13px; }
+      .check .d { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+      .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+      footer.status {
+        /* 用 margin-top:auto 把状态行压到窗口底部，窗口拉高时不会在中间留下空档。 */
+        margin-top: auto;
+        padding-top: 18px;
+        color: var(--muted);
+        font-size: 12px;
+        word-break: break-all;
+      }
+      .toast {
+        position: fixed;
+        left: 50%;
+        bottom: 26px;
+        transform: translate(-50%, 20px);
+        background: var(--toast-bg);
+        border: 1px solid var(--line);
+        color: var(--text);
+        padding: 10px 16px;
+        border-radius: 10px;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s, transform 0.2s;
+        box-shadow: 0 10px 30px rgba(0,0,0,.35);
+      }
+      .toast.show { opacity: 1; transform: translate(-50%, 0); }
+      .toast.err { border-color: var(--danger); }
+      .warn {
+        border: 1px solid #5a4a1f;
+        background: #2a2313;
+        color: #f2d28b;
+        padding: 10px 12px;
+        border-radius: 10px;
+        margin-bottom: 16px;
+        font-size: 12.5px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <h1 data-i18n="app.name">SAS PWA 客户端</h1>
+        <span class="ver" id="version"></span>
+        <span class="spacer"></span>
+        <select id="lang-select" class="btn ghost sm lang-select" data-i18n-title="lang.label" aria-label="Language"></select>
+        <select id="theme-select" class="btn ghost sm lang-select" data-i18n-title="theme.label" aria-label="Theme"></select>
+        <button class="btn ghost sm" id="btn-close" data-i18n="btn.close">关闭</button>
+      </header>
+
+      <div id="env-warn" class="warn" data-i18n="env.warn" hidden>
+        未检测到 Tauri 运行环境：当前为浏览器预览，保存与打开功能不可用。
+      </div>
+
+      <div class="grid">
+        <section class="card">
+          <div class="card-head">
+            <h2 data-i18n="sites.heading">SAS 站点</h2>
+            <button class="btn primary sm" id="btn-new" data-i18n="btn.new">+ 新增</button>
+          </div>
+          <div class="list" id="site-list"></div>
+          <div class="hint" id="default-hint"></div>
+        </section>
+
+        <section class="card">
+          <h2 id="editor-title">新增 SAS 站点</h2>
+          <form id="form">
+            <input type="hidden" id="f-id" />
+            <div class="row2">
+              <div class="field">
+                <label for="f-name" data-i18n="field.name">名称</label>
+                <input type="text" id="f-name" data-i18n-ph="ph.name" placeholder="例如：生产环境 / SAS Viya" />
+              </div>
+              <div class="field">
+                <label for="f-url" data-i18n="field.url">SAS 站点地址 *</label>
+                <input type="text" id="f-url" data-i18n-ph="ph.url" placeholder="https://viya.公司域名.com/" />
+              </div>
+            </div>
+            <div class="checks">
+              <label class="check">
+                <input type="checkbox" id="f-keep" checked />
+                <span>
+                  <span class="t" data-i18n="opt.keep.t">保持会话不超时（伪装 PWA）</span>
+                  <span class="d" data-i18n="opt.keep.d">注入 display-mode / navigator.standalone 伪装，并按下方间隔派发活动脉冲，避免 SAS 空闲超时掉线</span>
+                </span>
+              </label>
+              <label class="check">
+                <input type="checkbox" id="f-frameless" />
+                <span>
+                  <span class="t" data-i18n="opt.frameless.t">无边框窗口</span>
+                  <span class="d" data-i18n="opt.frameless.d">隐藏系统标题栏，改用自绘标题条（可拖动、最小化、⚙ 打开设置、隐藏到托盘）。站点窗口里按 F11 可随时切换该环境的有边框 / 无边框</span>
+                </span>
+              </label>
+              <label class="check">
+                <input type="checkbox" id="f-default" />
+                <span>
+                  <span class="t" data-i18n="opt.default.t">设为默认登录环境</span>
+                  <span class="d" data-i18n="opt.default.d">下次启动客户端时自动连接该环境；没有默认环境时，启动会先打开本设置页供选择</span>
+                </span>
+              </label>
+            </div>
+            <div class="row2">
+              <div class="field">
+                <label for="f-user" data-i18n="field.user">登录用户名</label>
+                <input type="text" id="f-user" autocomplete="off" data-i18n-ph="ph.user" placeholder="留空表示不保存凭据" />
+              </div>
+              <div class="field">
+                <label for="f-pass" data-i18n="field.pass">登录密码</label>
+                <input type="password" id="f-pass" autocomplete="new-password" data-i18n-ph="ph.pass" placeholder="留空表示不修改已保存的密码" />
+              </div>
+            </div>
+            <label class="check">
+              <input type="checkbox" id="f-autologin" />
+              <span>
+                <span class="t" data-i18n="opt.autologin.t">自动提交登录表单（自动登录）</span>
+                <span class="d" data-i18n="opt.autologin.d">出现登录页时自动填入并提交；同一会话最多自动提交一次，避免密码错误反复重试导致账号被锁</span>
+              </span>
+            </label>
+            <div class="hint inline" id="cred-hint"></div>
+            <div class="field" style="max-width: 220px">
+              <label for="f-pulse" data-i18n="field.pulse">活动脉冲间隔（秒，0 = 关闭）</label>
+              <input type="number" id="f-pulse" min="0" max="3600" step="10" value="120" />
+            </div>
+            <div class="actions">
+              <button class="btn primary" type="submit" id="btn-save-open" data-i18n="btn.saveOpen">保存并打开</button>
+              <button class="btn" type="button" id="btn-save" data-i18n="btn.save">仅保存</button>
+              <button class="btn ghost" type="button" id="btn-clear-cred" data-i18n="btn.clearCred" hidden>清除已存凭据</button>
+              <button class="btn ghost danger" type="button" id="btn-delete" data-i18n="btn.delete" hidden>删除</button>
+              <button class="btn ghost" type="button" id="btn-cancel" data-i18n="btn.cancel" hidden>取消</button>
+            </div>
+          </form>
+        </section>
+      </div>
+
+      <footer class="status" id="status"></footer>
+    </div>
+
+    <div class="toast" id="toast"></div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

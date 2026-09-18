@@ -1,0 +1,31 @@
+# ===== Node / 前端 =====
+node_modules/
+dist/
+
+# ===== Rust / Tauri 构建产物 =====
+src-tauri/target/
+**/target/
+
+# 注：Cargo.lock 是二进制应用，应提交（保持依赖锁定），不忽略
+
+# ===== 本地构建 / 运行日志与产物 =====
+*.log
+*.err
+*.out
+sas-pwa-client.exe
+
+# ===== Tauri 生成的架构/schema（可选：如由 CI 重建可忽略） =====
+# src-tauri/gen/
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini
+sas官方说明.md
+
+# ===== OS 临时 =====
+.DS_Store
+.codebuddy/

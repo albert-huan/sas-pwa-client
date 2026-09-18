@@ -1,0 +1,35 @@
+[package]
+name = "sas-pwa-client"
+version = "0.2.4"
+description = "SAS PWA 独立客户端 (Tauri 包装 SAS Viya 站点，站点地址可配置)"
+authors = ["Albert"]
+edition = "2021"
+
+[lib]
+name = "sas_pwa_client_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# 生产构建必须启用：Tauri 用它区分「生产」与「dev」（`cfg(dev)`）。
+# - `npm run tauri build`（Tauri CLI）会自动加上；
+# - 直接用 cargo 时必须写 `cargo build --release --features custom-protocol`，
+#   否则 Tauri 按 dev 模式加载 `build.devUrl`，设置窗口会去访问 localhost:1420 并报
+#   ERR_CONNECTION_REFUSED。
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png", "devtools"] }
+tauri-plugin-single-instance = "2"
+url = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
