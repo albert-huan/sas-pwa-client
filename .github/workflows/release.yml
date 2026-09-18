@@ -47,7 +47,7 @@ jobs:
           # tagName / releaseName 使用触发的 tag；手动触发时用输入或当前短 SHA
           tagName: ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}
           releaseName: "SAS PWA Client ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}"
-          releaseBody: "自动构建的 SAS PWA Client：含安装包（msi / nsis）与便携版（单个 exe，解压即用，无需安装）。"
+          releaseBody: "自动构建的 SAS PWA Client：Windows 安装包（msi / nsis）与便携版 exe，Linux 安装包（deb）。"
           releaseDraft: ${{ github.event_name == 'workflow_dispatch' }}
           prerelease: false
           # tauri-action 会自动执行 beforeBuildCommand (npm run build) 与 release 构建
@@ -56,3 +56,58 @@ jobs:
           includeRelease: true
           # 额外上传原始 exe 作为便携版（无需安装，直接运行）
           uploadPlainBinary: true
+
+  build-linux:
+    name: Build & Release (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies (Tauri v2 on Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            build-essential \
+            curl
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build & publish (tauri-action)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: "."
+          tagName: ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}
+          releaseName: "SAS PWA Client ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}"
+          releaseBody: "自动构建的 SAS PWA Client：Windows 安装包（msi / nsis）与便携版 exe，Linux 安装包（deb）。"
+          releaseDraft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: false
+          # 仅构建 deb（覆盖 tauri.conf.json 里 Windows 专用的 msi/nsis target）
+          args: "--bundles deb"
+          includeRelease: true
+          # Linux 不上传裸二进制，只上传 .deb 包
+          uploadPlainBinary: false
