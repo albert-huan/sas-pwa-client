@@ -1,0 +1,8 @@
+# 统一换行符处理。
+#
+# 关键：*.sh 与 Dockerfile 必须强制 LF。
+# Windows 侧 core.autocrlf=true 时 git 会把它们 checkout 成 CRLF，
+# 在 WSL/Linux 里执行会报 `$'\r': command not found`（build-deb.sh 已踩过一次）。
+* text=auto
+*.sh text eol=lf
+scripts/Dockerfile.deb text eol=lf
