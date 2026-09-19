@@ -1,6 +1,6 @@
 [package]
 name = "sas-pwa-client"
-version = "0.2.5"
+version = "0.2.8"
 description = "SAS PWA 独立客户端 (Tauri 包装 SAS Viya 站点，站点地址可配置)"
 authors = ["Albert"]
 edition = "2021"

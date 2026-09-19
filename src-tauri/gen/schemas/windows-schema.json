@@ -219,6 +219,12 @@
           "markdownDescription": "Enables the save_credential command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_render_mode command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-render-mode",
+          "markdownDescription": "Enables the set_render_mode command without any pre-configured scope."
+        },
+        {
           "description": "Enables the show_settings command without any pre-configured scope.",
           "type": "string",
           "const": "allow-show-settings",
@@ -271,6 +277,12 @@
           "type": "string",
           "const": "deny-save-credential",
           "markdownDescription": "Denies the save_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_render_mode command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-render-mode",
+          "markdownDescription": "Denies the set_render_mode command without any pre-configured scope."
         },
         {
           "description": "Denies the show_settings command without any pre-configured scope.",

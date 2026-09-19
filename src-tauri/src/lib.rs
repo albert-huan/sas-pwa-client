@@ -41,6 +41,27 @@ const SAS_INIT_SCRIPT: &str = r#"
 (function(){
   try {
     if (__KEEP_AWAKE__) {
+      // 「页面始终可见」伪装：WebKitGTK（GTK3）在窗口被最小化 / 隐藏（含本客户端「关闭 = 隐藏到
+      // 托盘」）时会把页面标成 hidden 并派发 visibilitychange，SAS 前端收到后往往重新拉数据、
+      // 把表格从第一行重绘一遍 —— 表现出来的就是「切个程序回来整页刷新了一次」。
+      // Windows 侧我们用 --disable-backgrounding-occluded-windows 等参数关掉了同类行为，
+      // 这里对页面做等价伪装：恒报 visible，并丢弃 visibilitychange 监听（只丢这一个事件类型）。
+      try {
+        Object.defineProperty(document, 'hidden', {
+          get: function(){ return false; }, configurable: true
+        });
+        Object.defineProperty(document, 'visibilityState', {
+          get: function(){ return 'visible'; }, configurable: true
+        });
+        Object.defineProperty(document, 'onvisibilitychange', {
+          get: function(){ return null; }, set: function(){}, configurable: true
+        });
+        var _addEL = EventTarget.prototype.addEventListener;
+        EventTarget.prototype.addEventListener = function(type){
+          if (type === 'visibilitychange') return;
+          return _addEL.apply(this, arguments);
+        };
+      } catch (e) {}
       var _mm = window.matchMedia;
       window.matchMedia = function(q){
         if (q && typeof q === 'string') {
@@ -115,7 +136,7 @@ const SAS_INIT_SCRIPT: &str = r#"
       bar = document.createElement('div');
       bar.id = BAR_ID;
       bar.setAttribute('data-tauri-drag-region', '');
-      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:28px;z-index:2147483647;display:none;background:rgba(20,20,25,0.55);color:#fff;font:12px/28px system-ui,sans-serif;user-select:none;';
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:28px;z-index:2147483647;display:none;background:rgba(20,20,25,0.55);color:#fff;font:12px/28px system-ui,"Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei","WenQuanYi Micro Hei",sans-serif;user-select:none;';
       var title = document.createElement('span');
       title.id = BAR_ID + '-title';
       title.setAttribute('data-tauri-drag-region', '');
@@ -197,6 +218,397 @@ fn get_site(id: &str) -> Option<Site> {
 /// 把任意文本安全地嵌进注入脚本（当作 JS 字符串字面量）。
 fn js_string(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into())
+}
+
+/// 系统语言标签（如 `zh-CN` / `en-US`）：设置页「跟随系统」据此选中文还是英文。
+///
+/// 为什么要由 Rust 侧取：WebView2 里的 `navigator.language` 未必等于系统显示语言，
+/// 中文系统下也可能报 `en-US`。这里用系统 API 取「用户界面语言」，创建设置窗口时注入
+/// 成 `window.__SAS_SYS_LANG__`，前端只做前缀判断（`zh*` → 中文）。
+#[cfg(windows)]
+fn system_lang_tag() -> String {
+    #[link(name = "kernel32")]
+    extern "system" {
+        /// 当前用户的界面语言（LANGID）。
+        fn GetUserDefaultUILanguage() -> u16;
+        /// LANGID → 语言标签（如 "zh-CN"）。
+        fn LCIDToLocaleName(locale: u32, name: *mut u16, name_count: i32, flags: u32) -> i32;
+        /// 界面语言取不到时的兜底：用户的区域设置名。
+        fn GetUserDefaultLocaleName(name: *mut u16, name_count: i32) -> i32;
+    }
+
+    const LOCALE_NAME_MAX_LENGTH: usize = 85;
+    let mut buf = [0u16; LOCALE_NAME_MAX_LENGTH];
+    let mut len = unsafe {
+        LCIDToLocaleName(
+            GetUserDefaultUILanguage() as u32,
+            buf.as_mut_ptr(),
+            buf.len() as i32,
+            0,
+        )
+    };
+    if len <= 0 {
+        len = unsafe { GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32) };
+    }
+    // 返回值是含结尾 NUL 的字符数；<= 1 说明只有 NUL 或失败。
+    if len <= 1 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buf[..(len as usize - 1)])
+}
+
+/// 非 Windows：语言在环境变量里（`LANG=zh_CN.UTF-8` 等）；取不到就返回空串，
+/// 由前端退回 `navigator.language`。
+#[cfg(not(windows))]
+fn system_lang_tag() -> String {
+    for key in ["LC_ALL", "LC_MESSAGES", "LC_CTYPE", "LANG"] {
+        if let Ok(v) = std::env::var(key) {
+            if !v.trim().is_empty() {
+                return v;
+            }
+        }
+    }
+    String::new()
+}
+
+// ---------------- Linux / WebKitGTK 适配 ----------------
+
+/// Linux 运行期适配：**必须在 Tauri（WebKitGTK）初始化之前调用**。
+///
+/// 1) 渲染路径（流畅度的关键）：WebKitGTK 2.42+ 的「加速合成」只走 DMA-BUF —— 关掉
+///    `WEBKIT_DISABLE_DMABUF_RENDERER=1` 就等于退回「Web 进程用 CPU 画共享内存位图、
+///    UI 进程再贴图」的非加速路径（见 WebKit 官方 Graphics 文档），滚动与动画都会明显变卡。
+///    所以有显卡可用时要保持默认路径；只有已知会花屏 / 闪烁 / 白屏（NVIDIA 专有驱动、WSLg）
+///    或**根本没有显卡**（没有 DRM 设备节点）时才降级。环境变量必须在这里设好，
+///    之后 WebKitGTK 初始化才读得到。
+///    - `smooth`：保持默认（DMA-BUF 加速）+ 强制加速合成，最快；
+///    - `compat`：强制关闭 DMA-BUF，用于花屏/闪烁/黑屏时救急；
+///    - `auto`   ：按环境自动判定 —— WSL / NVIDIA 专有驱动关 DMA-BUF；**没有 GPU 加速
+///      （`/dev/dri` 里没有 `renderD*` 渲染节点，只有 `card*` 的 BMC 2D 芯片也算）时再额外
+///      关掉加速合成**：那种机器上加速合成只能跑在 llvmpipe 软件 GL 上，白白多一层拷贝与
+///      GL 开销，纯 CPU 合成通常更稳更快（想验证反面效果就用「流畅优先」）；
+///    - 用户自己设过同名环境变量时一律以用户为准，方便现场逐个试参数。
+/// 2) 中文字体：缺字体时中文会渲染成方块，应用侧装不了字体，只能在日志里留一条可执行的建议。
+/// 3) 诊断：把会话类型 / 显卡 / 设备节点 / 驱动版本 / 最终生效的渲染路径写进日志，远程排查时
+///    能一眼看出对方是不是跑在软件渲染或降级路径上。
+///
+/// 返回值是一行诊断信息，写进 `debug.log`。
+#[cfg(target_os = "linux")]
+fn tune_linux_webkit(mode: &str) -> String {
+    let mut notes: Vec<String> = Vec::new();
+
+    let wsl = std::fs::read_to_string("/proc/version")
+        .map(|v| v.to_lowercase().contains("microsoft"))
+        .unwrap_or(false);
+    let nvidia = std::fs::read_to_string("/proc/driver/nvidia/version")
+        .ok()
+        .and_then(|line| first_version_token(&line));
+    // 有没有可用的显卡设备：Some(false) = 确定没有（纯软件渲染），None = 判断不了（读不到 /dev/dri）。
+    let gpu = gpu_available();
+    let software_only = gpu == Some(false);
+
+    // ---- 渲染路径：决定加速合成能不能用（这是 Linux 上「卡不卡」的头号因素）----
+    let user_set = std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER");
+    let disable = match mode {
+        "compat" => true,
+        "smooth" => false,
+        _ => wsl || nvidia.is_some() || software_only,
+    };
+    let decision = if user_set.is_some() {
+        "沿用环境变量 WEBKIT_DISABLE_DMABUF_RENDERER".to_string()
+    } else if disable {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        if software_only {
+            "共享内存（无 GPU，软件渲染）".to_string()
+        } else {
+            "共享内存（非加速，兼容性优先）".to_string()
+        }
+    } else {
+        "DMA-BUF（WebKit 默认加速路径）".to_string()
+    };
+
+    let mut causes: Vec<String> = Vec::new();
+    if wsl {
+        causes.push("WSL".to_string());
+    }
+    if let Some(v) = nvidia.as_deref() {
+        causes.push(format!("NVIDIA 专有驱动 {v}"));
+    }
+    if software_only {
+        causes.push("无 GPU（软件渲染）".to_string());
+    }
+    let auto_reason = if causes.is_empty() {
+        "自动：未发现已知问题环境".to_string()
+    } else {
+        format!("自动：{}", causes.join(" + "))
+    };
+    let reason = match mode {
+        "compat" => "按「兼容优先」强制降级".to_string(),
+        "smooth" => "按「流畅优先」保持加速".to_string(),
+        _ if user_set.is_some() => "环境变量优先".to_string(),
+        _ => auto_reason,
+    };
+    notes.push(format!("渲染模式={mode}（{reason}）→ {decision}"));
+
+    // 加速合成的取舍：
+    // - 「流畅优先」：强制打开（环境本身不支持时 WebKit 会自己退回，不会因此更差）；
+    // - 「自动」+ 无 GPU：加速合成只能跑在 llvmpipe 软件 GL 上，多一层拷贝与 GL 状态开销，
+    //   关掉走纯 CPU 合成通常更稳更快 —— 想对比反面就切「流畅优先」。
+    // 两种情况都不覆盖用户自己设过的同名变量。
+    if mode == "smooth"
+        && user_set.is_none()
+        && std::env::var_os("WEBKIT_FORCE_COMPOSITING_MODE").is_none()
+    {
+        std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
+        notes.push("已强制开启加速合成（流畅优先）".into());
+    } else if mode == "auto"
+        && software_only
+        && std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none()
+    {
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        notes.push("无 GPU：已关闭加速合成，走纯 CPU 合成（软渲染下通常更稳更快）".into());
+    }
+
+    // ---- 环境探测：只为排查用，不影响行为 ----
+    let session = std::env::var("XDG_SESSION_TYPE").ok().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| {
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            "wayland".to_string()
+        } else if std::env::var_os("DISPLAY").is_some() {
+            "x11".to_string()
+        } else {
+            "无显示（headless?）".to_string()
+        }
+    });
+    let nodes = dri_nodes();
+    let has_render_node = nodes.iter().any(|n| n.starts_with("renderD"));
+    let dri_desc = if nodes.is_empty() {
+        if std::path::Path::new("/dev/dri").exists() {
+            "/dev/dri 里没有 card*/renderD* 节点".to_string()
+        } else {
+            "无 /dev/dri".to_string()
+        }
+    } else if has_render_node {
+        nodes.join(",")
+    } else {
+        // 只有显示控制器、没有渲染节点：典型是服务器 BMC 的 ASPEED / Matrox 2D 芯片。
+        format!("{}（无 renderD* 渲染节点，只有 2D 显示控制器）", nodes.join(","))
+    };
+    notes.push(format!(
+        "会话={session}；GPU={}；显示设备={dri_desc}",
+        drm_gpu_summary()
+    ));
+    if std::path::Path::new("/dev/dxg").exists() {
+        notes.push("检测到 /dev/dxg（WSL GPU 直通）".into());
+    }
+    if std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_CLIENT").is_some() {
+        notes.push(
+            "检测到 SSH 会话：若通过 X11 转发 / VNC 之类的远程桌面使用，画面必然不如本地流畅".into(),
+        );
+    }
+
+    let gl_env: Vec<String> = [
+        "LIBGL_ALWAYS_SOFTWARE",
+        "MESA_LOADER_DRIVER_OVERRIDE",
+        "GALLIUM_DRIVER",
+        "WEBKIT_DISABLE_COMPOSITING_MODE",
+        "WEBKIT_FORCE_COMPOSITING_MODE",
+    ]
+    .into_iter()
+    .filter_map(|k| std::env::var(k).ok().map(|v| format!("{k}={v}")))
+    .collect();
+    if !gl_env.is_empty() {
+        notes.push(format!("GL 相关环境变量：{}", gl_env.join(" ")));
+    }
+
+    // 顺畅度的排查建议：不同机器差的环节不一样，日志里给一句能直接照做的。
+    if software_only {
+        notes.push(
+            "本机没有 GPU 加速（/dev/dri 里没有 renderD* 渲染节点）：WebKit 只能软件渲染（llvmpipe），\
+             流畅度上限由 CPU 决定。只有 card* 的机器（服务器 BMC 的 ASPEED / Matrox 等 2D 显示芯片）\
+             同样属于这种情况；若这台机器本来有显卡，再查内核驱动是否加载、虚拟机是否开了 3D 加速、\
+             容器是否映射了 /dev/dri"
+                .into(),
+        );
+        notes.push("可用 WEBKIT_SHOW_FPS=1 启动，在页面右上角看实时帧率做对比".into());
+    } else if gpu.is_none() {
+        notes.push("读不到 /dev/dri（权限问题？），无法判断是否软件渲染".into());
+    } else if !mesa_dri_drivers_present() {
+        notes.push(
+            "有渲染节点但没找到 mesa 的 DRI 驱动（*_dri.so），GL 仍可能退回 llvmpipe：\
+             建议 sudo apt install libgl1-mesa-dri"
+                .into(),
+        );
+    } else if mode == "auto" && disable && user_set.is_none() {
+        notes.push(
+            "若显示正常但觉得卡顿，可在设置页把「渲染模式」改成「流畅优先」后重启对比".into(),
+        );
+    }
+
+    match find_cjk_font() {
+        Some(font) => notes.push(format!("中文字体：{font}")),
+        None => notes.push(
+            "未检测到中文字体，中文可能显示为方块，建议：sudo apt install fonts-noto-cjk".into(),
+        ),
+    }
+
+    notes.join("；")
+}
+
+/// 有没有可用的 **渲染节点**（`/dev/dri/renderD*`），也就是能不能真正用上 GPU 加速。
+///
+/// 判据必须是渲染节点，而不是 `card*`：`card*` 只说明「有个显示控制器」。服务器主板 BMC 上的
+/// ASPEED / Matrox 这类 2D 芯片同样会注册 `card*`，但它们没有 3D/GL 能力、也不提供渲染节点
+/// （桌面仍会显示 `GPU=llvmpipe`）。只看 `card*` 会把这类机器误判成「有 GPU 可用」。
+/// 返回 `None` 表示读不到 `/dev/dri`（例如没权限），这时**不要**降级，避免误伤有卡的机器。
+#[cfg(target_os = "linux")]
+fn gpu_available() -> Option<bool> {
+    match std::fs::read_dir("/dev/dri") {
+        Ok(entries) => Some(entries.flatten().any(|e| {
+            e.file_name().to_string_lossy().starts_with("renderD")
+        })),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    }
+}
+
+/// `/dev/dri` 下实际存在的 `card*` / `renderD*` 节点（排序后返回；目录不存在或读不了就是空表）。
+#[cfg(target_os = "linux")]
+fn dri_nodes() -> Vec<String> {
+    let mut nodes: Vec<String> = std::fs::read_dir("/dev/dri")
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n.starts_with("card") || n.starts_with("renderD"))
+                .collect()
+        })
+        .unwrap_or_default();
+    nodes.sort();
+    nodes
+}
+
+/// 有没有装 mesa 的 DRI 驱动（`*_dri.so`）。有渲染节点但没装这套驱动时，GL 仍会退回 llvmpipe。
+#[cfg(target_os = "linux")]
+fn mesa_dri_drivers_present() -> bool {
+    const DIRS: [&str; 3] = ["/usr/lib/x86_64-linux-gnu/dri", "/usr/lib/dri", "/usr/lib64/dri"];
+    DIRS.iter().any(|dir| {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries.flatten().any(|e| {
+                    e.file_name().to_string_lossy().ends_with("_dri.so")
+                })
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// 汇总 `/sys/class/drm` 里的显示适配器标识（如 `card0:Intel/iris`），写日志用。
+///
+/// 为什么走 sysfs：核显 / 独显 / 服务器 BMC 的 2D 芯片 / 虚拟 GPU 都能认出来，且不依赖
+/// `lspci` 之类的命令行工具。认不出的厂商会带上原始 PCI vendor id（如 `card1:未知厂商 0x1234`），
+/// 内核驱动名取自 `device/uevent` 的 `DRIVER=`，一眼能看出是不是 `ast` / `mgag200` 这类
+/// 没有 3D 能力的显示控制器。
+#[cfg(target_os = "linux")]
+fn drm_gpu_summary() -> String {
+    const VENDORS: [(&str, &str); 12] = [
+        ("0x8086", "Intel"),
+        ("0x1002", "AMD"),
+        ("0x1022", "AMD"),
+        ("0x10de", "NVIDIA"),
+        ("0x1af4", "virtio-gpu"),
+        ("0x1b36", "QXL"),
+        ("0x15ad", "VMware"),
+        ("0x80ee", "VirtualBox"),
+        // 服务器 BMC 上的 2D 显示控制器：能显示画面，但没有 3D / GL 能力。
+        ("0x1a03", "ASPEED(BMC)"),
+        ("0x102b", "Matrox(BMC?)"),
+        ("0x1234", "QEMU/Bochs"),
+        ("0x1013", "Cirrus"),
+    ];
+
+    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
+        return "未知（读不到 /sys/class/drm）".to_string();
+    };
+    // 只取 cardN 本体，排除 cardN-DP-1 这类显示连接器目录。
+    let mut cards: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            name.starts_with("card") && !name.contains('-')
+        })
+        .collect();
+    cards.sort();
+
+    let gpus: Vec<String> = cards
+        .iter()
+        .map(|path| {
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let vendor = std::fs::read_to_string(path.join("device/vendor")).unwrap_or_default();
+            let vendor = vendor.trim().to_ascii_lowercase();
+            let label: String = VENDORS
+                .iter()
+                .find(|(id, _)| *id == vendor.as_str())
+                .map(|(_, label)| (*label).to_string())
+                .unwrap_or_else(|| {
+                    // 认不出就带上原始 id（如 0x1234）：回来一查就知道是哪家的虚拟显卡。
+                    if vendor.is_empty() {
+                        "未知厂商".to_string()
+                    } else {
+                        format!("未知厂商 {vendor}")
+                    }
+                });
+            match kernel_driver_of(path) {
+                Some(driver) => format!("{name}:{label}/{driver}"),
+                None => format!("{name}:{label}"),
+            }
+        })
+        .collect();
+
+    if gpus.is_empty() {
+        "未识别（sysfs 无 cardN）".to_string()
+    } else {
+        gpus.join(",")
+    }
+}
+
+/// 从 `/sys/class/drm/cardN/device/uevent` 里取内核驱动名（`DRIVER=ast` 等）。
+#[cfg(target_os = "linux")]
+fn kernel_driver_of(card: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(card.join("device/uevent")).ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("DRIVER=").map(|d| d.trim().to_string()))
+        .filter(|d| !d.is_empty())
+}
+
+/// 从一段文本里抠出第一个形如 `535.171.04` 的版本号（NVIDIA 驱动版本行用）。
+#[cfg(target_os = "linux")]
+fn first_version_token(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .map(|t| t.trim_start_matches('v'))
+        .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()) && t.contains('.'))
+        .map(str::to_string)
+}
+
+/// 粗查系统里有没有常见中文字体（只看几个标准安装路径，够用来给日志提示）。
+#[cfg(target_os = "linux")]
+fn find_cjk_font() -> Option<&'static str> {
+    const CANDIDATES: [(&str, &str); 7] = [
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK"),
+        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK"),
+        ("/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc", "Noto Serif CJK"),
+        (
+            "/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf",
+            "Source Han Sans SC",
+        ),
+        ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", "WenQuanYi Micro Hei"),
+        ("/usr/share/fonts/truetype/arphic/uming.ttc", "AR PL UMing"),
+        ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", "Droid Sans Fallback"),
+    ];
+    CANDIDATES
+        .iter()
+        .find(|(path, _)| std::path::Path::new(path).exists())
+        .map(|(_, name)| *name)
 }
 
 /// 按站点配置渲染注入脚本（含该站点的登录凭据）。
@@ -442,6 +854,10 @@ fn open_settings(app: &tauri::AppHandle) {
         return;
     }
     // 同样直接创建（不要走 run_on_main_thread，理由见文件顶部说明）。
+    // 系统语言随窗口注入：i18n.js 的「跟随系统」以此为准（WebView2 的 navigator.language 不可尽信）。
+    let lang = system_lang_tag();
+    let init_script = format!("window.__SAS_SYS_LANG__ = {};", js_string(&lang));
+    log_line(app, &format!("settings window system lang: {lang:?}"));
     let res = (|| -> Result<(), String> {
         let built = WebviewWindowBuilder::new(
             app,
@@ -449,6 +865,7 @@ fn open_settings(app: &tauri::AppHandle) {
             tauri::WebviewUrl::App("index.html".into()),
         )
         .title("SAS 客户端 · 设置")
+        .initialization_script(&init_script)
         .additional_browser_args(BROWSER_ARGS)
         .devtools(true)
         .inner_size(1120.0, 860.0)
@@ -553,6 +970,9 @@ fn get_config(app: tauri::AppHandle) -> serde_json::Value {
         "sites": cfg.sites,
         "last_site_id": cfg.last_site_id,
         "ui_theme": cfg.ui_theme,
+        "render_mode": cfg.render_mode,
+        // 设置页据此决定要不要显示「Linux 渲染」区块。
+        "platform": std::env::consts::OS,
         "config_path": config::config_path(&app).map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
         "version": app.package_info().version.to_string(),
     })
@@ -561,14 +981,15 @@ fn get_config(app: tauri::AppHandle) -> serde_json::Value {
 /// 保存配置：校验 → 落盘 → 更新内存 → 刷新托盘 → 同步已打开窗口的外观。
 #[tauri::command]
 fn save_config(app: tauri::AppHandle, sites: Vec<Site>) -> Result<Vec<Site>, String> {
-    let (prev_last, prev_theme) = {
+    let (prev_last, prev_theme, prev_render) = {
         let g = cfg_state().lock().unwrap();
-        (g.last_site_id.clone(), g.ui_theme.clone())
+        (g.last_site_id.clone(), g.ui_theme.clone(), g.render_mode.clone())
     };
     let mut cfg = AppConfig {
         sites,
         last_site_id: prev_last,
         ui_theme: prev_theme,
+        render_mode: prev_render,
     };
     config::normalize(&mut cfg)?;
     config::save(&app, &cfg)?;
@@ -604,6 +1025,21 @@ fn set_ui_theme(app: tauri::AppHandle, theme: String) -> Result<(), String> {
     config::save(&app, &cfg)?;
     *cfg_state().lock().unwrap() = cfg;
     Ok(())
+}
+
+/// 保存 Linux 渲染模式（auto / smooth / compat）。
+///
+/// 实质改的是 WebKitGTK 的 DMA-BUF 开关（见 `tune_linux_webkit`），必须在 WebKitGTK
+/// 初始化之前设置 —— 所以这里只落盘，**下次启动才生效**，返回归一化后的值给设置页回显。
+#[tauri::command]
+fn set_render_mode(app: tauri::AppHandle, mode: String) -> Result<String, String> {
+    let mode = config::normalize_render_mode(&mode);
+    let mut cfg = cfg_state().lock().unwrap().clone();
+    cfg.render_mode = mode.clone();
+    config::save(&app, &cfg)?;
+    *cfg_state().lock().unwrap() = cfg;
+    log_line(&app, &format!("render mode saved: {mode}（重启后生效）"));
+    Ok(mode)
 }
 
 /// 详见文件上半部分 `create_site_window` 上方的说明。
@@ -757,6 +1193,13 @@ fn clear_credential(app: tauri::AppHandle, site_id: String) -> Result<(), String
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Linux（WebKitGTK）适配必须在 Tauri 初始化之前完成（DMA-BUF 开关、中文字体检查）。
+    // 渲染模式来自配置文件，此时还没有 AppHandle，只能直接读一遍 config.json。
+    #[cfg(target_os = "linux")]
+    let linux_notes = tune_linux_webkit(&config::pre_init_render_mode());
+    #[cfg(not(target_os = "linux"))]
+    let linux_notes = String::new();
+
     let mut builder = tauri::Builder::default();
 
     // 单实例锁：避免重复启动；再次启动时聚焦最近使用的窗口。
@@ -777,6 +1220,7 @@ pub fn run() {
             open_site,
             hide_settings,
             set_ui_theme,
+            set_render_mode,
             toggle_frameless,
             show_settings,
             get_credential,
@@ -796,6 +1240,10 @@ pub fn run() {
                     loaded.sites.len()
                 ),
             );
+
+            if !linux_notes.is_empty() {
+                log_line(app.handle(), &format!("linux: {linux_notes}"));
+            }
 
             let _ = build_tray_at_startup(app.handle());
 

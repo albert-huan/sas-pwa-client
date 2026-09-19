@@ -13,6 +13,7 @@ src-tauri/target/
 *.err
 *.out
 sas-pwa-client.exe
+sas-pwa-client.exe.old
 
 # ===== Tauri 生成的架构/schema（可选：如由 CI 重建可忽略） =====
 # src-tauri/gen/

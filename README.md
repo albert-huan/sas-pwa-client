@@ -12,10 +12,10 @@ the site address instead of hard-coding it into the binary.
 
 ## What it is
 
-This is **not** a PWA. It is a native Tauri shell (Rust + WebView2) that loads a remote
-SAS Viya site. The real PWA is the remote SAS site itself; this client only injects scripts
-to fake the PWA detection signals so the SAS front end takes the standalone branch and stops
-timing out the session.
+This is **not** a PWA. It is a native Tauri shell (WebView2 on Windows, the system's WebKitGTK on
+Linux) that loads a remote SAS Viya site. The real PWA is the remote SAS site itself; this client
+only injects scripts to fake the PWA detection signals so the SAS front end takes the standalone
+branch and stops timing out the session.
 
 Key design decisions:
 
@@ -37,7 +37,7 @@ Key design decisions:
   it automatically on launch (no Settings window). Without a default, the Settings window opens
   first so you can pick one. Toggle anytime from the list; the tray menu annotates the default
   with *(default)*.
-- **Session keep-alive** — disables WebView2 background throttling + spoofs PWA
+- **Session keep-alive** — disables WebView2 background throttling (Windows only) + spoofs PWA
   (`display-mode` / `navigator.standalone`) + periodic `mousemove` pulse, so SAS never idles out.
 - **Tray resident** — closing a window only hides it to the tray; the session keeps running.
 - **Frameless mode** — optional injected title bar with drag region, minimize and hide buttons.
@@ -53,6 +53,67 @@ Key design decisions:
 - **Windows** with the WebView2 Runtime (Edge Chromium).
 - **Node.js 20.19+ (or 22.12+)** and npm (builds the settings page only; Vite 8 / rolldown requires it).
 - **Rust toolchain** + [Tauri v2 prerequisites](https://tauri.app/start/prerequisites/).
+- **Linux (optional)** — use the published `.deb`, see the next section.
+
+---
+
+## Linux (.deb)
+
+The published package is built on **Ubuntu 22.04** and runs on 22.04 / 24.04 / 26.04:
+
+```bash
+sudo apt install "./SAS PWA Client_x.y.z_amd64.deb"   # use apt, not dpkg -i (deps + recommends)
+```
+
+A CJK font (`fonts-noto-cjk` / `fonts-wqy-microhei` / `fonts-arphic-uming`, whichever is available) is
+installed as a *Recommends*. With `--no-install-recommends`, or on a system with no Chinese font at all,
+Chinese text renders as boxes:
+
+```bash
+sudo apt install fonts-noto-cjk
+```
+
+**Laggy / flickering UI**: WebKitGTK's accelerated compositing only goes through DMA-BUF — disabling it means
+falling back to CPU painting, which makes scrolling and animations visibly slower. So the WebKit default is
+kept, and only environments known to be broken (NVIDIA proprietary driver, WSLg) are downgraded automatically.
+The **"Linux rendering"** section at the bottom of the settings page offers three modes (restart required):
+
+| Mode | What it does | When to use |
+| --- | --- | --- |
+| Automatic (default) | Disables DMA-BUF when WSL / NVIDIA is detected; on machines without GPU acceleration (no `renderD*` render node under `/dev/dri`) it also turns off accelerated compositing and composites on the CPU | Normal case |
+| Performance first | Keeps DMA-BUF and forces accelerated compositing (`WEBKIT_FORCE_COMPOSITING_MODE=1`) | Display is fine but feels slow |
+| Compatibility first | Disables DMA-BUF (`WEBKIT_DISABLE_DMABUF_RENDERER=1`) | Flicker / artifacts / blank window |
+
+**Machines without GPU acceleration** can only software-render: that includes the 2D BMC chips found on server
+mainboards (the log then shows e.g. `card1:ASPEED(BMC)/ast` with **no** `renderD*` node), VMs without 3D acceleration
+and containers without `/dev/dri` mapped in. On such machines `WEBKIT_SHOW_FPS=1 sas-pwa-client` shows a live FPS box
+in the top-right corner of the page, handy for comparing the modes above; but the smoothness ceiling is the CPU. The
+`linux:` line in the start-up log tells you which case you are in (“no renderD* render node” or `GPU=llvmpipe`). The
+client already does what it can; for a smooth experience run it on a machine with a GPU (or make the X session use
+one).
+
+You can also try the routes without touching the config (env vars take precedence):
+
+```bash
+WEBKIT_FORCE_COMPOSITING_MODE=1 sas-pwa-client    # equals "Performance first"
+WEBKIT_DISABLE_DMABUF_RENDERER=1 sas-pwa-client   # equals "Compatibility first"
+WEBKIT_DISABLE_COMPOSITING_MODE=1 sas-pwa-client  # one step further: disable compositing
+```
+
+The `linux: ...` line in `~/.config/com.saspwa/debug.log` records the effective render mode and why, the session
+type (x11 / wayland), the GPU (`/sys/class/drm`, e.g. `card0:Intel`), DRM device nodes, SSH sessions, GL-related
+environment variables and the CJK font found. Paste that single line when reporting a problem — if it says there
+is no `/dev/dri`, WebKit is stuck with CPU (llvmpipe) rendering, and changing the render mode will not help much.
+
+**The page re-renders from the first row after switching to another app**: on Linux the page is rendered by
+WebKitGTK. When the window is minimised/hidden (including this client's "close = hide to tray"), WebKit marks the
+page hidden and fires `visibilitychange`; the SAS front-end then often re-fetches data and repaints its table from
+row one. On Windows that class of behaviour is disabled through WebView2's
+`--disable-backgrounding-occluded-windows`; on Linux the injected script does the equivalent (with "keep session
+alive" enabled: always report `visible` and drop `visibilitychange`). If your desktop has **no compositor**
+(common on lightweight desktops such as XFCE / LXDE, or without `picom`), X11 throws away the window contents once
+it is obscured, so a full repaint on return is unavoidable — enabling a compositor (`picom`, `xfwm4 --composer=on`,
+or a GNOME / KDE / Wayland session) helps far more than switching render modes.
 
 ---
 

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-render-mode"
+description = "Enables the set_render_mode command without any pre-configured scope."
+commands.allow = ["set_render_mode"]
+
+[[permission]]
+identifier = "deny-set-render-mode"
+description = "Denies the set_render_mode command without any pre-configured scope."
+commands.deny = ["set_render_mode"]

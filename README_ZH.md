@@ -11,9 +11,9 @@ PWA 安装）；同时站点地址可由用户配置，而不是写死在二进�
 
 ## 这是什么
 
-本项目**不是** PWA，而是一个原生 Tauri 壳（Rust + WebView2）去加载远程 SAS Viya 站点。真正的
-PWA 是远程 SAS 站点本身；本客户端只是注入脚本伪造 PWA 判定信号，让 SAS 前端走 standalone 分支、
-停止对会话计时超时。
+本项目**不是** PWA，而是一个原生 Tauri 壳（Windows 用 WebView2，Linux 用系统的 WebKitGTK）去加载
+远程 SAS Viya 站点。真正的 PWA 是远程 SAS 站点本身；本客户端只是注入脚本伪造 PWA 判定信号，让 SAS
+前端走 standalone 分支、停止对会话计时超时。
 
 关键设计：
 
@@ -31,8 +31,8 @@ PWA 是远程 SAS 站点本身；本客户端只是注入脚本伪造 PWA 判定
 - **配置可保存**：所有环境持久化到 `config.json`，随时增删改。
 - **默认登录环境**：把某个环境设为默认后，下次启动直接连接它，不再先显示设置页；没设默认时才
   启动进设置页供选择。列表里「设为默认 / 取消默认」可随时切换，托盘菜单给默认项标注「（默认）」。
-- **会话不掉线**：关闭 WebView2 后台节流 + PWA 伪装（`display-mode` / `navigator.standalone`）
-  + 周期性 `mousemove` 脉冲，让 SAS 不再空闲超时。
+- **会话不掉线**：关闭 WebView2 后台节流（仅 Windows）+ PWA 伪装（`display-mode` /
+  `navigator.standalone`）+ 周期性 `mousemove` 脉冲，让 SAS 不再空闲超时。
 - **托盘常驻**：关闭窗口只是隐藏到托盘，会话继续存活。
 - **无边框模式**：可选自绘标题条（可拖动、最小化、隐藏到托盘）。
 - **单实例**：再次启动只会聚焦已运行的实例。
@@ -46,6 +46,61 @@ PWA 是远程 SAS 站点本身；本客户端只是注入脚本伪造 PWA 判定
 - **Windows** + WebView2 Runtime（Edge Chromium）。
 - **Node.js 20.19+（或 22.12+）** 与 npm（仅用于构建设置页；Vite 8 / rolldown 需要该版本）。
 - **Rust 工具链**及 [Tauri v2 前置依赖](https://tauri.app/start/prerequisites/)。
+- **Linux（可选）**：直接用发布好的 `.deb`，见下节。
+
+---
+
+## Linux（.deb）
+
+发布包在 **Ubuntu 22.04** 上构建，兼容 22.04 / 24.04 / 26.04：
+
+```bash
+sudo apt install "./SAS PWA Client_x.y.z_amd64.deb"   # 用 apt，别用 dpkg -i（依赖/推荐包不会自动装）
+```
+
+安装时会一并装上中文字体（`fonts-noto-cjk` / `fonts-wqy-microhei` / `fonts-arphic-uming` 任一，列为
+Recommends）。若安装时用了 `--no-install-recommends`、或系统里没有任何中文字体，界面中文会显示成方块：
+
+```bash
+sudo apt install fonts-noto-cjk
+```
+
+**界面卡顿 / 闪烁**：WebKitGTK 的加速合成只走 DMA-BUF —— 关掉它就等于退回 CPU 画图，滚动和动画会明显变卡。
+所以默认保持 WebKit 自己的路径，只在已知有问题的环境（NVIDIA 专有驱动、WSLg）自动降级。设置页底部的
+**「Linux 渲染」**区块可三选一（改完需重启客户端）：
+
+| 模式 | 实际动作 | 什么时候用 |
+| --- | --- | --- |
+| 自动（默认） | 检测到 WSL / NVIDIA 时关 DMA-BUF；**没有 GPU 加速**（`/dev/dri` 里没有 `renderD*` 渲染节点）时再关掉加速合成，走纯 CPU 合成 | 一般情况 |
+| 流畅优先 | 保持 DMA-BUF，并强制开启加速合成（`WEBKIT_FORCE_COMPOSITING_MODE=1`） | 界面正常但觉得不流畅 |
+| 兼容优先 | 关闭 DMA-BUF（`WEBKIT_DISABLE_DMABUF_RENDERER=1`） | 花屏 / 闪烁 / 白屏 |
+
+**没有 GPU 加速的机器**只能软件渲染：服务器主板 BMC 上的 ASPEED / Matrox 这类 2D 显示芯片（日志里会出现
+`card1:ASPEED(BMC)/ast` 且**没有** `renderD*` 节点）也属于这一类，另外还有没开 3D 的虚拟机、没映射 `/dev/dri`
+的容器。这类机器上 `WEBKIT_SHOW_FPS=1 sas-pwa-client` 会在页面右上角显示实时帧率，方便对照上面几种模式的
+效果；但流畅度的上限由 CPU 决定——确认方式就是看启动日志里的 `linux:` 行（出现「无 renderD* 渲染节点」或
+`GPU=llvmpipe` 即属此列），客户端侧已经做了能做的，要顺滑得换到有显卡的机器（或让 X 会话用上显卡）。
+
+也可以不改配置，用环境变量临时试（环境变量优先级最高）：
+
+```bash
+WEBKIT_FORCE_COMPOSITING_MODE=1 sas-pwa-client    # 相当于「流畅优先」
+WEBKIT_DISABLE_DMABUF_RENDERER=1 sas-pwa-client   # 相当于「兼容优先」
+WEBKIT_DISABLE_COMPOSITING_MODE=1 sas-pwa-client  # 再退一步：完全关闭合成
+```
+
+启动日志 `~/.config/com.saspwa/debug.log` 里的 `linux: ...` 一行会记录：生效的渲染模式与原因、会话类型
+（x11 / wayland）、GPU（`/sys/class/drm`，如 `card0:Intel`）、显示设备节点、SSH 会话、GL 相关环境变量、
+中文字体。排查问题时直接贴这一行即可 —— 例如显示「无 /dev/dri」就说明当前只能用 CPU 软件渲染
+（llvmpipe），这时换渲染模式帮助有限，优先把显卡驱动 / 设备映射搞定。
+
+**切到别的程序再切回来，页面重新刷新一遍**：Linux 下页面由 WebKitGTK 渲染，窗口被最小化 / 隐藏（含本
+客户端「关闭 = 隐藏到托盘」）时 WebKit 会把页面标成 hidden 并派发 `visibilitychange`，SAS 前端收到后
+常会重新拉数据、把表格从第一行重绘一遍。Windows 侧靠 WebView2 的 `--disable-backgrounding-occluded-windows`
+关掉了同类行为；Linux 侧由注入脚本做等价伪装（开启「保持会话不超时」时生效：恒报 `visible` 并丢弃
+`visibilitychange`）。另外若桌面**没有合成器**（很多轻量桌面默认不开，如 XFCE / LXDE / 无 `picom`），X11 在
+窗口被遮挡后会丢弃窗口内容，切回来必然整窗重绘 —— 这时开合成器（`picom`、`xfwm4 --composer=on`，
+或换 GNOME / KDE / Wayland 会话）比换渲染模式有用得多。
 
 ---
 

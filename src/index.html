@@ -92,7 +92,10 @@
       body {
         background: radial-gradient(1200px 600px at 10% -10%, var(--bg-glow) 0%, var(--bg) 55%);
         color: var(--text);
-        font: 14px/1.55 "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+        /* 字体栈：Windows 走 Segoe UI / 微软雅黑；Linux 上没有这两款，显式点名常见 CJK 字体，
+           否则中文可能被 fontconfig 回退成日文字形（Noto Sans CJK JP）。 */
+        font: 14px/1.55 "Segoe UI", system-ui, -apple-system, "Noto Sans CJK SC",
+          "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
         -webkit-font-smoothing: antialiased;
       }
       .app {
@@ -265,6 +268,20 @@
         font-size: 13px;
       }
       input:focus { border-color: var(--accent); }
+      .field select {
+        width: 100%;
+        max-width: 420px;
+        padding: 9px 11px;
+        border-radius: 9px;
+        border: 1px solid var(--line);
+        background: var(--input-bg);
+        color: var(--text);
+        outline: none;
+        font-size: 13px;
+      }
+      .field select:focus { border-color: var(--accent); }
+      /* Linux 渲染区块与上方两栏网格之间留出间距。 */
+      .card.stack { margin-top: 18px; }
       .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
       .checks { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 14px; }
       .check {
@@ -409,6 +426,20 @@
           </form>
         </section>
       </div>
+
+      <!-- 仅 Linux 显示（前端按 get_config 返回的 platform 决定显隐）：改的是 WebKitGTK
+           的渲染路径，需要重启客户端才生效。 -->
+      <section class="card stack" id="linux-card" hidden>
+        <h2 data-i18n="render.heading">Linux 渲染</h2>
+        <div class="field">
+          <label for="f-render" data-i18n="render.mode">渲染模式</label>
+          <select id="f-render"></select>
+        </div>
+        <div class="hint" data-i18n="render.hint">
+          Linux 上网页由 WebKitGTK 渲染：默认的 DMA-BUF 硬件加速路径最快，但在 NVIDIA 专有驱动、WSLg
+          等环境可能花屏 / 闪烁。自动模式会在这些环境降级为共享内存路径（更稳但明显更慢）。修改后需重启客户端生效。
+        </div>
+      </section>
 
       <footer class="status" id="status"></footer>
     </div>

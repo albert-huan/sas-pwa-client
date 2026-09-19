@@ -78,6 +78,13 @@ const dict = {
     "confirm.clearCred": "确定清除该站点已保存的用户名和密码？",
     "toast.credCleared": "已清除登录凭据",
     "toast.clearFail": "清除失败：{e}",
+    "render.heading": "Linux 渲染",
+    "render.mode": "渲染模式",
+    "render.auto": "自动（推荐）",
+    "render.smooth": "流畅优先（保持硬件加速）",
+    "render.compat": "兼容优先（关闭 DMA-BUF）",
+    "render.hint": "Linux 上网页由 WebKitGTK 渲染：WebKit 默认的 DMA-BUF 硬件加速路径最快。自动模式在 WSL / NVIDIA 专有驱动下退到共享内存路径（更稳）；在没有 GPU 加速的机器上（/dev/dri 里没有 renderD* 渲染节点 —— 服务器 BMC 的 ASPEED / Matrox 等 2D 显示芯片也算）则关掉 DMA-BUF 与加速合成、走纯 CPU 合成，软渲染下这通常更稳更快。觉得卡顿可切换到「流畅优先」（保持硬件加速并强制加速合成）重启对比；出现花屏 / 闪烁 / 白屏则切回「兼容优先」。修改后需重启客户端生效。",
+    "toast.renderSaved": "渲染模式已保存，重启客户端后生效",
   },
   en: {
     "app.title": "SAS Client · Site Settings",
@@ -151,24 +158,44 @@ const dict = {
     "confirm.clearCred": "Clear the saved username and password for this site?",
     "toast.credCleared": "Login credentials cleared",
     "toast.clearFail": "Clear failed: {e}",
+    "render.heading": "Linux rendering",
+    "render.mode": "Rendering mode",
+    "render.auto": "Automatic (recommended)",
+    "render.smooth": "Performance first (keep hardware acceleration)",
+    "render.compat": "Compatibility first (disable DMA-BUF)",
+    "render.hint": "On Linux the page is rendered by WebKitGTK, and WebKit's default DMA-BUF path is the fastest. The automatic mode falls back to the shared-memory path on WSL / NVIDIA proprietary drivers, and on machines with no GPU acceleration (no renderD* render node under /dev/dri — the 2D BMC chips found on servers, such as ASPEED / Matrox, count as well) it additionally turns off accelerated compositing so everything is composited on the CPU, which is usually more stable and faster there. If it feels sluggish, switch to “Performance first” (keeps hardware acceleration and forces accelerated compositing) and restart; if you see flicker, artifacts or a blank window, go back to “Compatibility first”. Changes take effect after restarting the client.",
+    "toast.renderSaved": "Rendering mode saved — restart the client to apply",
   },
 };
 
 const LS_KEY = "sas-client-lang";
 export const SUPPORTED = ["zh", "en"];
-// 语言选择的可选项：auto = 跟随系统（按浏览器/系统语言自动检测）。
+// 语言下拉框的可选项：auto 表示「跟随系统」，它只是记忆里的**选择**，
+// 不是一种语言 —— 落盘 / 存储的 auto 必须经 detectLang() 换算成 zh / en 再查词典。
 const LANG_CHOICES = ["auto", "zh", "en"];
 
-function detectLang() {
-  try {
-    const saved = localStorage.getItem(LS_KEY);
-    if (saved && LANG_CHOICES.includes(saved)) return saved;
-  } catch (e) {
-    /* localStorage 可能不可用（隐私模式等），忽略 */
+/**
+ * 系统语言标签（小写，如 zh-cn / en-us）。
+ * 优先用 Rust 侧注入的 `__SAS_SYS_LANG__`（Windows 上取的是系统显示语言，
+ * WebView2 里的 navigator.language 未必与之一致）；注入缺失时（浏览器预览等）退回 navigator.language。
+ */
+function systemLangTag() {
+  const clean = (v) => (typeof v === "string" ? v.trim().toLowerCase() : "");
+  if (typeof window !== "undefined") {
+    const injected = clean(window.__SAS_SYS_LANG__);
+    if (injected) return injected;
   }
-  const nav = (typeof navigator !== "undefined" && (navigator.language || "")).toLowerCase();
-  if (nav.startsWith("zh")) return "zh";
-  return "en";
+  if (typeof navigator !== "undefined") return clean(navigator.language);
+  return "";
+}
+
+/**
+ * auto（跟随系统）时把系统语言映射成受支持的语言：zh* → zh，其余 → en。
+ * 注意：返回值只能是 "zh" / "en" —— 绝不能把「auto」这个选择本身当语言返回，
+ * 否则 dict["auto"] 查不到会整体回退英文。
+ */
+function detectLang() {
+  return systemLangTag().startsWith("zh") ? "zh" : "en";
 }
 
 // 记忆的当前选择（"auto" / "zh" / "en"）；未存时默认 "auto"（跟随系统）。
@@ -182,9 +209,9 @@ let current = (() => {
   return "auto";
 })();
 
-/** 实际生效的语言（auto 时按浏览器/系统语言检测）。 */
+/** 实际生效的语言（auto 时按系统语言检测）；永远是 "zh" / "en"，不会是 "auto"。 */
 export function effectiveLang() {
-  return current === "auto" ? detectLang() : current;
+  return current === "zh" || current === "en" ? current : detectLang();
 }
 
 export function getLang() {

@@ -23,6 +23,7 @@ fn main() {
             "save_config",
             "open_site",
             "hide_settings",
+            "set_render_mode",
             "toggle_frameless",
             "show_settings",
             "get_credential",

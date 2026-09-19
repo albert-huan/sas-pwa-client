@@ -63,6 +63,10 @@ pub struct AppConfig {
     pub last_site_id: Option<String>,
     /// UI 主题偏好：system（跟随系统）/ light / dark。
     pub ui_theme: String,
+    /// Linux 渲染模式：auto（自动，见 lib.rs::tune_linux_webkit）/ smooth（流畅优先，保持
+    /// DMA-BUF 硬件加速）/ compat（兼容优先，关闭 DMA-BUF 走共享内存）。
+    /// 实质是 WebKitGTK 的环境变量，必须在 WebKitGTK 初始化之前定下来，所以改完要重启客户端。
+    pub render_mode: String,
 }
 
 impl Default for AppConfig {
@@ -71,8 +75,46 @@ impl Default for AppConfig {
             sites: Vec::new(),
             last_site_id: None,
             ui_theme: "system".to_string(),
+            render_mode: DEFAULT_RENDER_MODE.to_string(),
         }
     }
+}
+
+/// 渲染模式的合法取值与默认值。
+pub const RENDER_MODES: [&str; 3] = ["auto", "smooth", "compat"];
+pub const DEFAULT_RENDER_MODE: &str = "auto";
+
+/// 归一化渲染模式：未知值（含手工编辑配置写错）一律回落到 auto。
+pub fn normalize_render_mode(mode: &str) -> String {
+    let m = mode.trim().to_ascii_lowercase();
+    if RENDER_MODES.contains(&m.as_str()) {
+        m
+    } else {
+        DEFAULT_RENDER_MODE.to_string()
+    }
+}
+
+/// 启动最早期读取渲染模式（Tauri 初始化之前，此时还没有 AppHandle）。
+///
+/// 为什么不用 `load()`：`WEBKIT_*` 环境变量必须在 WebKitGTK 初始化之前设好，而 `load()`
+/// 依赖 AppHandle 才能定位配置目录；这里按 Linux 的约定自己拼一次路径（与 Tauri 的
+/// `config_dir()` 一致：`$XDG_CONFIG_HOME` 或 `$HOME/.config`）。读不到就按默认值来。
+#[cfg(target_os = "linux")]
+pub fn pre_init_render_mode() -> String {
+    let dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
+    let Some(dir) = dir else {
+        return DEFAULT_RENDER_MODE.to_string();
+    };
+    let Ok(text) = fs::read_to_string(dir.join(APP_FOLDER_NAME).join(CONFIG_FILE)) else {
+        return DEFAULT_RENDER_MODE.to_string();
+    };
+    let mode = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("render_mode").and_then(|m| m.as_str().map(str::to_string)))
+        .unwrap_or_default();
+    normalize_render_mode(&mode)
 }
 
 /// 用户级配置根目录（Windows：%APPDATA%，Linux：~/.config）。
@@ -185,6 +227,7 @@ pub fn save(app: &AppHandle, cfg: &AppConfig) -> Result<(), String> {
 
 /// 校验并补全配置：补齐 URL 协议、生成/去重 id、规范名称、限制脉冲间隔、保证默认站点唯一。
 pub fn normalize(cfg: &mut AppConfig) -> Result<(), String> {
+    cfg.render_mode = normalize_render_mode(&cfg.render_mode);
     let mut used: Vec<String> = Vec::with_capacity(cfg.sites.len());
 
     for (i, site) in cfg.sites.iter_mut().enumerate() {

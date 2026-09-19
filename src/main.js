@@ -38,9 +38,22 @@ const dom = {
   close: el("btn-close"),
   lang: el("lang-select"),
   theme: el("theme-select"),
+  linuxCard: el("linux-card"),
+  render: el("f-render"),
 };
 
-let state = { sites: [], draft: null, editingIndex: -1, configPath: "", version: "", cred: null, uiTheme: "system" };
+let state = {
+  sites: [],
+  draft: null,
+  editingIndex: -1,
+  configPath: "",
+  version: "",
+  cred: null,
+  uiTheme: "system",
+  // 渲染模式与平台：Linux 才有这个设置（改的是 WebKitGTK 的渲染路径，重启后生效）。
+  renderMode: "auto",
+  platform: "",
+};
 
 function invoke(cmd, args) {
   if (!ENABLED) {
@@ -356,18 +369,22 @@ async function load() {
     state.configPath = cfg.config_path || "";
     state.version = cfg.version || "";
     state.uiTheme = cfg.ui_theme || "system";
+    state.renderMode = cfg.render_mode || "auto";
+    state.platform = cfg.platform || "";
     applyTheme(state.uiTheme);
     renderStatus();
     renderList();
     renderForm();
+    renderRenderSection();
   } catch (e) {
     toast(t("toast.loadFail", { e }), true);
   }
 }
 
-/** 初始化语言切换器：填充「跟随系统 / 中文 / 英文」可选项，绑定切换事件（切换后刷新所有文案与动态区域）。 */
-function initLangSelect() {
+/** 重建语言下拉框：选项标签本身也是本地化的，切换语言后要跟着变。 */
+function rebuildLangOptions() {
   if (!dom.lang) return;
+  dom.lang.innerHTML = "";
   langOptions().forEach((opt) => {
     const o = document.createElement("option");
     o.value = opt.value;
@@ -375,13 +392,63 @@ function initLangSelect() {
     dom.lang.appendChild(o);
   });
   dom.lang.value = getLang();
+}
+
+/** 渲染模式下拉框：选项标签本地化，只有 Linux 才显示这个区块。 */
+function rebuildRenderOptions() {
+  if (!dom.render) return;
+  const cur = state.renderMode || "auto";
+  dom.render.innerHTML = "";
+  ["auto", "smooth", "compat"].forEach((value) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = t(`render.${value}`);
+    dom.render.appendChild(o);
+  });
+  dom.render.value = cur;
+}
+
+/** 显隐「Linux 渲染」区块（按后端返回的 platform 判断）并刷新其选项。 */
+function renderRenderSection() {
+  if (!dom.linuxCard) return;
+  dom.linuxCard.hidden = state.platform !== "linux";
+  rebuildRenderOptions();
+}
+
+/** 系统标题栏的窗口标题跟着语言走（网页 document.title 与窗口标题是两回事）。 */
+function syncWindowTitle() {
+  if (!ENABLED || !tauri || !tauri.window) return;
+  try {
+    tauri.window.getCurrentWindow().setTitle(t("app.title")).catch(() => {});
+  } catch (e) {
+    /* 权限受限时忽略：标题保持原样即可，不影响使用 */
+  }
+}
+
+/** 按当前语言重刷界面：静态文案（data-i18n）+ 所有动态区域。 */
+function renderAllText() {
+  applyI18n();
+  syncWindowTitle();
+  rebuildLangOptions();
+  renderStatus();
+  renderList();
+  renderForm();
+  renderCredHint();
+  renderRenderSection();
+}
+
+/** 初始化语言切换器：填充「跟随系统 / 中文 / 英文」可选项，绑定切换事件（切换后刷新所有文案与动态区域）。 */
+function initLangSelect() {
+  if (!dom.lang) return;
+  rebuildLangOptions();
   dom.lang.addEventListener("change", () => {
     setLang(dom.lang.value);
-    applyI18n();
-    renderStatus();
-    renderList();
-    renderForm();
-    renderCredHint();
+    renderAllText();
+  });
+  // 系统语言在运行中变化时（在系统设置里改显示语言、或远程会话切换）：
+  // 选「跟随系统」的话界面文案要立刻跟着切。
+  window.addEventListener("languagechange", () => {
+    if (getLang() === "auto") renderAllText();
   });
 }
 
@@ -411,6 +478,26 @@ function initThemeSelect() {
     state.uiTheme = v;
     applyTheme(v);
     invoke("set_ui_theme", { theme: v }).catch(() => {});
+  });
+}
+
+/**
+ * 初始化 Linux 渲染模式下拉框：切换后立即落盘（后端只写配置）。
+ * 渲染路径是 WebKitGTK 启动时的环境变量，所以界面提示「重启后生效」。
+ */
+function initRenderSelect() {
+  if (!dom.render) return;
+  renderRenderSection();
+  dom.render.addEventListener("change", async () => {
+    const mode = dom.render.value;
+    try {
+      state.renderMode = await invoke("set_render_mode", { mode });
+      rebuildRenderOptions();
+      toast(t("toast.renderSaved"));
+    } catch (e) {
+      rebuildRenderOptions();
+      toast(t("toast.saveFail", { e }), true);
+    }
   });
 }
 
@@ -452,10 +539,12 @@ if (!ENABLED) {
   });
 }
 
-// 启动：先应用当前语言的静态文案，再初始化语言切换器与动态区域。
+// 启动：先应用当前语言的静态文案（含窗口标题），再初始化语言切换器与动态区域。
 applyI18n();
+syncWindowTitle();
 initLangSelect();
 initThemeSelect();
+initRenderSelect();
 renderStatus();
 renderList();
 renderForm();
