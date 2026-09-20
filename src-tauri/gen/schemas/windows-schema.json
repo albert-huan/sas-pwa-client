@@ -201,6 +201,12 @@
           "markdownDescription": "Enables the hide_settings command without any pre-configured scope."
         },
         {
+          "description": "Enables the new_site_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-new-site-window",
+          "markdownDescription": "Enables the new_site_window command without any pre-configured scope."
+        },
+        {
           "description": "Enables the open_site command without any pre-configured scope.",
           "type": "string",
           "const": "allow-open-site",
@@ -259,6 +265,12 @@
           "type": "string",
           "const": "deny-hide-settings",
           "markdownDescription": "Denies the hide_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the new_site_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-new-site-window",
+          "markdownDescription": "Denies the new_site_window command without any pre-configured scope."
         },
         {
           "description": "Denies the open_site command without any pre-configured scope.",

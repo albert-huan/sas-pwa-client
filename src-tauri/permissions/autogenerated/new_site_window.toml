@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-new-site-window"
+description = "Enables the new_site_window command without any pre-configured scope."
+commands.allow = ["new_site_window"]
+
+[[permission]]
+identifier = "deny-new-site-window"
+description = "Denies the new_site_window command without any pre-configured scope."
+commands.deny = ["new_site_window"]

@@ -14,6 +14,7 @@ mod config;
 mod credentials;
 mod hotkey;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -203,6 +204,103 @@ const TOGGLE_DEBOUNCE: Duration = Duration::from_millis(400);
 
 fn window_label(site_id: &str) -> String {
     format!("{WINDOW_PREFIX}{site_id}")
+}
+
+// ---------------- 多窗口支持 ----------------
+//
+// 同一个站点可以同时开多个窗口：所有窗口共用同一份 WebView 数据目录（Windows 是
+// WebView2 的 user data dir，Linux 是同一个 WebKit WebContext），cookie / SSO 会话
+// 是同一份 —— 新窗口打开就是当前登录身份，等价于 Edge PWA 在同一 profile 下多开。
+//
+// 标签规则：首个窗口仍是 `site-<id>`，之后依次 `site-<id>-2`、`site-<id>-3`…
+// 归属只认下面的注册表，**不靠标签字符串反推**：站点 id 由 sanitize 生成，本身
+// 就可能以 `-2` 结尾（如 id = `viya-2`），字符串反推会张冠李戴。
+
+/// 窗口标签 → 站点 id。
+static WINDOW_SITES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+fn window_sites() -> &'static Mutex<HashMap<String, String>> {
+    WINDOW_SITES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 窗口标签里的序号：`site-<id>` = 1、`site-<id>-2` = 2…（识别不出来按 1 处理）。
+fn window_index(label: &str, site_id: &str) -> usize {
+    label
+        .strip_prefix(WINDOW_PREFIX)
+        .and_then(|rest| rest.strip_prefix(site_id))
+        .and_then(|rest| rest.strip_prefix('-'))
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(1)
+}
+
+/// 某站点的第 n 个窗口标签（n 从 1 开始）。
+fn window_label_at(site_id: &str, n: usize) -> String {
+    if n <= 1 {
+        window_label(site_id)
+    } else {
+        format!("{WINDOW_PREFIX}{site_id}-{n}")
+    }
+}
+
+/// 标签 → 站点 id：先查注册表，再退回「恰好等于 site-<id>」的精确匹配。
+fn site_id_of_label(label: &str) -> Option<String> {
+    if !label.starts_with(WINDOW_PREFIX) {
+        return None;
+    }
+    if let Some(id) = window_sites().lock().unwrap().get(label).cloned() {
+        return Some(id);
+    }
+    get_site(label.strip_prefix(WINDOW_PREFIX)?).map(|s| s.id)
+}
+
+/// 挑一个没被占用的标签（多开时依次用 -2、-3…）。
+///
+/// 注册表里已登记但窗口还没建出来的标签也算占用：连续快速点两次「新窗口」时，
+/// 两个后台线程可能同时走到这里，靠「先占位再创建」避免抢同一个标签。
+fn free_window_label(app: &tauri::AppHandle, site_id: &str) -> String {
+    let mut n = 1usize;
+    loop {
+        let candidate = window_label_at(site_id, n);
+        let reserved = window_sites().lock().unwrap().contains_key(&candidate);
+        if !reserved && app.get_webview_window(&candidate).is_none() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// 某站点当前所有窗口的标签，按窗口序号排序。
+fn site_window_labels(app: &tauri::AppHandle, site_id: &str) -> Vec<String> {
+    let mut labels: Vec<(usize, String)> = app
+        .webview_windows()
+        .keys()
+        .filter(|label| site_id_of_label(label).as_deref() == Some(site_id))
+        .map(|label| (window_index(label, site_id), label.clone()))
+        .collect();
+    labels.sort();
+    labels.into_iter().map(|(_, label)| label).collect()
+}
+
+/// 打开站点时优先聚焦「最近用过的那个窗口」，其次取序号最小的。
+fn active_or_first_window(app: &tauri::AppHandle, site_id: &str) -> Option<String> {
+    let labels = site_window_labels(app, site_id);
+    if labels.is_empty() {
+        return None;
+    }
+    let active = active_window().lock().unwrap().clone();
+    if labels.contains(&active) {
+        return Some(active);
+    }
+    labels.into_iter().next()
+}
+
+/// 窗口标题：同一站点的第 2 个窗口起加序号，任务栏 / 自绘标题条里能区分。
+fn window_title(site: &Site, label: &str) -> String {
+    let n = window_index(label, &site.id);
+    if n <= 1 {
+        site.name.clone()
+    } else {
+        format!("{} ({n})", site.name)
+    }
 }
 
 fn get_site(id: &str) -> Option<Site> {
@@ -654,18 +752,22 @@ fn log_line(app: &tauri::AppHandle, msg: &str) {
 }
 
 /// 应用无边框外观（含自绘标题条显隐）。仅在需要改变时才动 decorations。
+///
+/// 一个站点可能开了多个窗口，逐个应用（标题条文案用各自窗口的标题，带序号）。
 fn apply_frameless(app: &tauri::AppHandle, site: &Site) {
-    if let Some(w) = app.get_webview_window(&window_label(&site.id)) {
-        let decorated = w.is_decorated().unwrap_or(true);
-        if decorated == site.frameless {
-            let _ = w.set_decorations(!site.frameless);
+    for label in site_window_labels(app, &site.id) {
+        if let Some(w) = app.get_webview_window(&label) {
+            let decorated = w.is_decorated().unwrap_or(true);
+            if decorated == site.frameless {
+                let _ = w.set_decorations(!site.frameless);
+            }
+            let script = format!(
+                "if(window.__sasShowFramelessBar)window.__sasShowFramelessBar({}, {});",
+                site.frameless,
+                js_string(&window_title(site, &label))
+            );
+            let _ = w.eval(&script);
         }
-        let script = format!(
-            "if(window.__sasShowFramelessBar)window.__sasShowFramelessBar({}, {});",
-            site.frameless,
-            serde_json::to_string(&site.name).unwrap_or_else(|_| "\"\"".into())
-        );
-        let _ = w.eval(&script);
     }
 }
 
@@ -700,9 +802,11 @@ fn same_site(a: &url::Url, b: &url::Url) -> bool {
 ///   * 只有加载本地 index.html 的设置窗口可以在 setup 里就地创建（已实测成功）。
 
 /// 新建 SAS 站点窗口（只能在主线程之外调用，理由见上方【关键规则】）。
-fn create_site_window(app: &tauri::AppHandle, site: &Site) -> Result<(), String> {
-    let label = window_label(&site.id);
+/// `label` 由调用方给出：多开时是 `site-<id>-2`…（见 `free_window_label`）。
+fn create_site_window(app: &tauri::AppHandle, site: &Site, label: &str) -> Result<(), String> {
     let target = url::Url::parse(&site.url).map_err(|e| format!("地址无效：{e}"))?;
+    // 同一站点的第 2 个窗口起标题带序号，任务栏里能区分。
+    let title = window_title(site, label);
     log_line(app, &format!("creating {label} -> {target}"));
 
     // 防白屏：窗口先隐藏创建，等页面真正加载完成（on_page_load Finished）再显示，
@@ -710,11 +814,17 @@ fn create_site_window(app: &tauri::AppHandle, site: &Site) -> Result<(), String>
     let shown = Arc::new(AtomicBool::new(false));
     let shown_cb = shown.clone();
     let frameless = site.frameless;
-    let site_name = site.name.clone();
+    let site_name = title.clone();
+
+    // 先占位再创建（连续点两次「新窗口」不会抢同一个标签），创建失败时回滚。
+    window_sites()
+        .lock()
+        .unwrap()
+        .insert(label.to_string(), site.id.clone());
 
     let built =
-        WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::External(target.clone()))
-            .title(site.name.clone())
+        WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::External(target.clone()))
+            .title(title)
             .initialization_script(render_script(app, site))
             .additional_browser_args(BROWSER_ARGS)
             .devtools(true)
@@ -751,6 +861,7 @@ fn create_site_window(app: &tauri::AppHandle, site: &Site) -> Result<(), String>
             })
             .build()
             .map_err(|e| {
+                window_sites().lock().unwrap().remove(label);
                 log_line(app, &format!("create {label} failed: {e}"));
                 format!("创建窗口失败：{e}")
             })?;
@@ -764,10 +875,11 @@ fn create_site_window(app: &tauri::AppHandle, site: &Site) -> Result<(), String>
                 .unwrap_or_else(|e| format!("<err:{e}>"))
         ),
     );
-    // 这里不 show，等页面加载完成再显示（见 on_page_load）；只先登记为当前窗口。
+    // 「标签 → 站点」在创建前就已登记（见上方占位说明），这里不再重复。
+    // 不 show，等页面加载完成再显示（见 on_page_load）；只先登记为当前窗口。
     {
         let mut active = active_window().lock().unwrap();
-        *active = label.clone();
+        *active = label.to_string();
     }
     apply_frameless(app, site);
 
@@ -776,7 +888,7 @@ fn create_site_window(app: &tauri::AppHandle, site: &Site) -> Result<(), String>
     //  2) 再过 2s 无论页面有没有触发 Finished（证书错误 / 登录跳转卡住）都强制显示，
     //     否则窗口一直隐藏，看起来就像「点了打开没反应」。
     let handle = app.clone();
-    let lbl = label.clone();
+    let lbl = label.to_string();
     let tgt = target.clone();
     let shown_thread = shown.clone();
     std::thread::spawn(move || {
@@ -809,29 +921,30 @@ fn create_site_window(app: &tauri::AppHandle, site: &Site) -> Result<(), String>
     Ok(())
 }
 
-/// 打开（或聚焦）某个 SAS 站点窗口。
+/// 打开（或聚焦）某个 SAS 站点窗口：已有窗口就聚焦（同一站点开了多个时优先最近用过的
+/// 那个），一个都没有才新建。
 fn open_site_window(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     let site = get_site(id).ok_or_else(|| format!("未找到站点：{id}"))?;
-    let label = window_label(&site.id);
     let target = url::Url::parse(&site.url).map_err(|e| e.to_string())?;
-    log_line(
-        app,
-        &format!("open id={} label={} url={}", site.id, label, target),
-    );
 
-    if let Some(w) = app.get_webview_window(&label) {
-        // 地址被改过才重新导航，避免每次点击都整页刷新、丢掉会话状态。
-        let stale = match w.url() {
-            Ok(cur) => !same_site(&cur, &target),
-            Err(_) => true,
-        };
-        if stale {
-            let _ = w.navigate(target);
+    if let Some(label) = active_or_first_window(app, &site.id) {
+        log_line(app, &format!("open id={} label={label} url={target}", site.id));
+        if let Some(w) = app.get_webview_window(&label) {
+            // 地址被改过才重新导航，避免每次点击都整页刷新、丢掉会话状态。
+            let stale = match w.url() {
+                Ok(cur) => !same_site(&cur, &target),
+                Err(_) => true,
+            };
+            if stale {
+                let _ = w.navigate(target);
+            }
         }
         focus_window(app, &label);
     } else {
         // 直接创建：在命令线程调用时 tauri 会把创建请求派发到事件循环，安全。
-        create_site_window(app, &site)?;
+        let label = free_window_label(app, &site.id);
+        log_line(app, &format!("open id={} label={label} url={target}", site.id));
+        create_site_window(app, &site, &label)?;
     }
 
     // 记住最近打开的站点，下次启动自动恢复。
@@ -845,6 +958,17 @@ fn open_site_window(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 为同一站点再开一个窗口（不聚焦已有窗口）。
+///
+/// 所有站点窗口共用同一份 WebView 数据目录（cookie / SSO 会话），新窗口打开时就是
+/// 当前登录身份 —— 等价于 Edge PWA 在同一 profile 下多开窗口。
+fn create_new_site_window(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    let site = get_site(id).ok_or_else(|| format!("未找到站点：{id}"))?;
+    let label = free_window_label(app, &site.id);
+    log_line(app, &format!("new window id={} label={label}", site.id));
+    create_site_window(app, &site, &label)
 }
 
 /// 打开设置窗口（本地 dist 页面）。
@@ -936,10 +1060,9 @@ fn build_tray_menu<M: Manager<tauri::Wry>>(app: &M) -> Result<tauri::menu::Menu<
 
         // 「无边框窗口」勾选项：作用于当前激活的站点窗口，没有站点窗口时置灰。
         let active_label = active_window().lock().unwrap().clone();
-        let active_id = active_label
-            .strip_prefix(WINDOW_PREFIX)
-            .map(|s| s.to_string())
-            .filter(|id| sites.iter().any(|s| &s.id == id));
+        // 多开时标签可能带序号，站点归属走注册表（见 `site_id_of_label`）。
+        let active_id =
+            site_id_of_label(&active_label).filter(|id| sites.iter().any(|s| &s.id == id));
         let checked = active_id
             .as_ref()
             .and_then(|id| sites.iter().find(|s| &s.id == id))
@@ -951,6 +1074,13 @@ fn build_tray_menu<M: Manager<tauri::Wry>>(app: &M) -> Result<tauri::menu::Menu<
             .build(app)
             .map_err(|e| e.to_string())?;
         builder = builder.item(&frameless_item);
+
+        // 「新建窗口」：为当前激活的站点再开一个窗口（与已有窗口共享同一份登录态）。
+        let newwin_item = MenuItemBuilder::with_id("newwindow", "新建窗口（当前环境）")
+            .enabled(active_id.is_some())
+            .build(app)
+            .map_err(|e| e.to_string())?;
+        builder = builder.item(&newwin_item);
 
         builder = builder.item(&item("reload", "重新加载当前页面")?);
         builder = builder.item(&item("showall", "显示全部窗口")?);
@@ -1060,6 +1190,18 @@ async fn open_site(app: tauri::AppHandle, id: Option<String>) -> Result<(), Stri
     }
 }
 
+/// 设置页「新窗口」：为同一站点再开一个窗口（不聚焦已有窗口）。
+///
+/// 窗口之间共享同一份 WebView 数据目录 → cookie / SSO 会话同一份，新窗口即当前登录身份。
+/// 必须 async：理由同 `open_site`（创建窗口不能在主线程 IPC 回调栈里发起）。
+#[tauri::command]
+async fn new_site_window(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if id.trim().is_empty() {
+        return Err("请先保存站点配置，再新开窗口".to_string());
+    }
+    create_new_site_window(&app, &id)
+}
+
 /// 设置页用：关闭自身（实际是隐藏，保留状态）。
 #[tauri::command]
 fn hide_settings(app: tauri::AppHandle) {
@@ -1095,10 +1237,9 @@ fn set_frameless(app: &tauri::AppHandle, site_id: &str, frameless: bool) -> Resu
 /// 三个入口共用：站点窗口的 F11（原生钩子，见 `hotkey` 模块）、注入脚本里的 F11 兜底、
 /// 以及设置页 / 托盘菜单。带 400ms 去重，避免一次按键被处理两次（等于没切换）。
 fn toggle_frameless_for(app: &tauri::AppHandle, window_label: &str) -> Result<bool, String> {
-    let id = window_label
-        .strip_prefix(WINDOW_PREFIX)
-        .ok_or_else(|| "只有 SAS 站点窗口才能切换无边框".to_string())?
-        .to_string();
+    // 多开时标签可能带序号，站点归属走注册表而不是字符串裁剪。
+    let id = site_id_of_label(window_label)
+        .ok_or_else(|| "只有 SAS 站点窗口才能切换无边框".to_string())?;
 
     let current = get_site(&id)
         .map(|s| s.frameless)
@@ -1218,6 +1359,7 @@ pub fn run() {
             get_config,
             save_config,
             open_site,
+            new_site_window,
             hide_settings,
             set_ui_theme,
             set_render_mode,
@@ -1293,13 +1435,27 @@ pub fn run() {
                 "frameless" => {
                     // 托盘里的「无边框窗口」：作用于当前激活的站点窗口。
                     let label = active_window().lock().unwrap().clone();
-                    if let Some(site_id) = label.strip_prefix(WINDOW_PREFIX).map(|s| s.to_string()) {
+                    if let Some(site_id) = site_id_of_label(&label) {
                         let app = app.clone();
                         std::thread::spawn(move || {
                             if let Some(next) = get_site(&site_id).map(|s| !s.frameless) {
                                 if let Err(e) = set_frameless(&app, &site_id, next) {
                                     eprintln!("[SAS PWA 客户端] 切换无边框失败：{e}");
                                 }
+                            }
+                        });
+                    }
+                }
+                "newwindow" => {
+                    // 托盘里的「新建窗口」：为当前激活的站点再开一个窗口（共享同一份登录态）。
+                    // 与 open: 一样走后台线程创建（同步创建会死锁，见文件顶部说明）。
+                    let label = active_window().lock().unwrap().clone();
+                    if let Some(site_id) = site_id_of_label(&label) {
+                        let app = app.clone();
+                        std::thread::spawn(move || {
+                            if let Err(e) = create_new_site_window(&app, &site_id) {
+                                eprintln!("[SAS PWA 客户端] 新建窗口失败：{e}");
+                                log_line(&app, &format!("new window failed: {e}"));
                             }
                         });
                     }
@@ -1329,6 +1485,10 @@ pub fn run() {
                     // 所有窗口关闭时都只隐藏到托盘，保持会话存活。
                     api.prevent_close();
                     let _ = window.hide();
+                }
+                // 窗口真被销毁（退出前 / 主动 destroy）时清掉注册表，别留着孤儿标签。
+                tauri::WindowEvent::Destroyed => {
+                    window_sites().lock().unwrap().remove(window.label());
                 }
                 // 记住最后一个获得焦点的站点窗口：托盘左键显隐、菜单「无边框窗口」都以它为准。
                 tauri::WindowEvent::Focused(true) => {

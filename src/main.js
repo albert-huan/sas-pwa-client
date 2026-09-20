@@ -139,6 +139,8 @@ function renderList() {
     acts.className = "acts";
     acts.append(
       mkBtn(t("list.open"), () => openSite(s.id), "primary sm"),
+      // 「新窗口」：为同一站点再开一个窗口，与已有窗口共享同一份登录态（同一账号多开）。
+      mkBtn(t("list.newWindow"), () => openSiteNewWindow(s.id), "sm"),
       mkBtn(t("list.edit"), () => startEdit(i), "sm"),
       mkBtn(s.default ? t("list.unsetDefault") : t("list.setDefault"), () => setDefault(i, !s.default), "sm"),
       mkBtn(t("list.delete"), () => removeSite(i), "sm danger")
@@ -260,6 +262,23 @@ async function openSite(id) {
   toast(t("toast.opening"));
   try {
     await invoke("open_site", { id });
+  } catch (e) {
+    toast(t("toast.openFail", { e }), true);
+  }
+}
+
+/**
+ * 为同一站点再开一个窗口（不聚焦已有窗口）。
+ * 窗口共享同一份 cookie / 登录态，所以新窗口打开就是当前登录身份（同一账号多开）。
+ */
+async function openSiteNewWindow(id) {
+  if (!id) {
+    toast(t("toast.fillUrl"), true);
+    return;
+  }
+  toast(t("toast.opening"));
+  try {
+    await invoke("new_site_window", { id });
   } catch (e) {
     toast(t("toast.openFail", { e }), true);
   }

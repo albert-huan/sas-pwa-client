@@ -30,3 +30,5 @@ sas官方说明.md
 # ===== OS 临时 =====
 .DS_Store
 .codebuddy/
+SAS PWA Client*.deb
+.gitignore
