@@ -13,6 +13,8 @@
 mod config;
 mod credentials;
 mod hotkey;
+mod permissions;
+mod taskbar;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -143,17 +145,25 @@ const SAS_INIT_SCRIPT: &str = r#"
       title.setAttribute('data-tauri-drag-region', '');
       title.textContent = ' ' + (document.title || '');
       title.style.cssText = 'padding-left:10px;';
-      var mk = function(label, fn){
+      var mk = function(label, tip, fn){
         var b = document.createElement('button');
         b.textContent = label;
+        if (tip) b.title = tip;
         b.style.cssText = 'float:right;height:28px;width:34px;border:0;background:transparent;color:#fff;cursor:pointer;font-size:13px;';
         b.addEventListener('click', fn);
         return b;
       };
+      var win = function(){
+        return window.__TAURI__ && window.__TAURI__.window ? window.__TAURI__.window.getCurrentWindow() : null;
+      };
       bar.appendChild(title);
-      bar.appendChild(mk('×', function(){ if (window.__TAURI__ && window.__TAURI__.window) window.__TAURI__.window.getCurrentWindow().hide(); }));
-      bar.appendChild(mk('–', function(){ if (window.__TAURI__ && window.__TAURI__.window) window.__TAURI__.window.getCurrentWindow().minimize(); }));
-      bar.appendChild(mk('⚙', function(){ if (window.__TAURI__ && window.__TAURI__.core) window.__TAURI__.core.invoke('show_settings'); }));
+      // ×：隐藏到托盘（窗口不可见，但页面继续跑、保活脉冲继续）—— 与系统标题栏 × 行为一致。
+      bar.appendChild(mk('×', '隐藏到托盘（保持会话）', function(){ var w = win(); if (w) w.hide(); }));
+      // ✕：彻底关闭（销毁窗口、释放 WebView）。cookie 仍在，下次打开还是登录态，
+      // 但该窗口的页面状态与保活脉冲会消失 —— 刻意与 × 分开，避免误点。
+      bar.appendChild(mk('✕', '彻底关闭窗口', function(){ if (window.__TAURI__ && window.__TAURI__.core) window.__TAURI__.core.invoke('close_window'); }));
+      bar.appendChild(mk('–', '最小化', function(){ var w = win(); if (w) w.minimize(); }));
+      bar.appendChild(mk('⚙', '设置', function(){ if (window.__TAURI__ && window.__TAURI__.core) window.__TAURI__.core.invoke('show_settings'); }));
       document.documentElement.appendChild(bar);
       return bar;
     }
@@ -301,6 +311,64 @@ fn window_title(site: &Site, label: &str) -> String {
     } else {
         format!("{} ({n})", site.name)
     }
+}
+
+/// 站点配色（按站点 id 哈希取固定调色板里的一个）—— 用于窗口图标的标记色。
+fn site_color(site_id: &str) -> (u8, u8, u8) {
+    const PALETTE: [(u8, u8, u8); 8] = [
+        (79, 140, 255),  // 蓝
+        (53, 196, 107),  // 绿
+        (255, 159, 64),  // 橙
+        (229, 83, 83),   // 红
+        (166, 102, 255), // 紫
+        (38, 198, 218),  // 青
+        (233, 196, 0),   // 黄
+        (255, 105, 180), // 粉
+    ];
+    // FNV-1a：站点 id 是 sanitize 过的小写 id，稳定、无依赖
+    let mut h: u32 = 2_166_136_261;
+    for b in site_id.as_bytes() {
+        h ^= *b as u32;
+        h = h.wrapping_mul(16_777_619);
+    }
+    PALETTE[(h as usize) % PALETTE.len()]
+}
+
+/// 站点窗口图标：应用图标缩放到 32×32，底部叠一条按站点 id 取色的色带 + 右上小色块。
+/// 配合每窗口独立 AUMID，任务栏上就能一眼区分是哪个站点（拿不到应用图标时退化为纯色方块）。
+fn site_window_icon(app: &tauri::AppHandle, site: &Site) -> tauri::image::Image<'static> {
+    const SIZE: u32 = 32;
+    let (r, g, b) = site_color(&site.id);
+    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
+    // 底色：站点色（应用图标缺失或带透明时也能看清）
+    for px in rgba.chunks_exact_mut(4) {
+        px.copy_from_slice(&[r, g, b, 255]);
+    }
+    if let Some(base) = app.default_window_icon() {
+        let (bw, bh) = (base.width().max(1), base.height().max(1));
+        let src = base.rgba();
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let si = (((y * bh / SIZE) * bw + (x * bw / SIZE)) * 4) as usize;
+                let di = ((y * SIZE + x) * 4) as usize;
+                if si + 4 <= src.len() {
+                    rgba[di..di + 4].copy_from_slice(&src[si..si + 4]);
+                }
+            }
+        }
+    }
+    // 底部 5px 色带 + 右上 6×6 色块：前者在任务栏小图标下也认得出，后者用于区分相近的色。
+    let mut paint = |x0: u32, y0: u32, x1: u32, y1: u32| {
+        for y in y0..y1.min(SIZE) {
+            for x in x0..x1.min(SIZE) {
+                let i = ((y * SIZE + x) * 4) as usize;
+                rgba[i..i + 4].copy_from_slice(&[r, g, b, 255]);
+            }
+        }
+    };
+    paint(0, SIZE - 5, SIZE, SIZE);
+    paint(SIZE - 6, 0, SIZE, 6);
+    tauri::image::Image::new_owned(rgba, SIZE, SIZE)
 }
 
 fn get_site(id: &str) -> Option<Site> {
@@ -781,6 +849,24 @@ fn focus_window(app: &tauri::AppHandle, label: &str) {
     *active = label.to_string();
 }
 
+/// 彻底关闭一个窗口：销毁 WebView、释放内存（与 `hide()`「收进托盘继续保活」相对）。
+///
+/// 用 `destroy()` 而不是 `close()`：tauri 2.11 里 `destroy()` 不派发任何事件、强制关闭，
+/// 因此不会被 `CloseRequested` 的「隐藏」逻辑拦下；收尾（注册表、当前窗口、托盘）统一由
+/// `Destroyed` 事件负责，调用方不用自己清。
+fn destroy_site_window(app: &tauri::AppHandle, label: &str) {
+    if let Some(w) = app.get_webview_window(label) {
+        log_line(app, &format!("destroy {label}"));
+        if let Err(e) = w.destroy() {
+            eprintln!("[SAS PWA 客户端] 彻底关闭窗口失败：{e}");
+            log_line(app, &format!("destroy {label} failed: {e}"));
+        }
+    } else {
+        // 窗口已经不在（可能刚被关掉）：顺手清掉注册表里的孤儿条目。
+        window_sites().lock().unwrap().remove(label);
+    }
+}
+
 /// 判断两个 URL 是否指向同一站点（scheme + host + port 一致即视为同站）。
 fn same_site(a: &url::Url, b: &url::Url) -> bool {
     a.scheme() == b.scheme()
@@ -802,9 +888,14 @@ fn same_site(a: &url::Url, b: &url::Url) -> bool {
 ///   * 只有加载本地 index.html 的设置窗口可以在 setup 里就地创建（已实测成功）。
 
 /// 新建 SAS 站点窗口（只能在主线程之外调用，理由见上方【关键规则】）。
-/// `label` 由调用方给出：多开时是 `site-<id>-2`…（见 `free_window_label`）。
-fn create_site_window(app: &tauri::AppHandle, site: &Site, label: &str) -> Result<(), String> {
-    let target = url::Url::parse(&site.url).map_err(|e| format!("地址无效：{e}"))?;
+/// `label` 由调用方给出：多开时是 `site-<id>-2`…（见 `free_window_label`）；
+/// `target` 一般是站点地址，页面自己 `window.open(url)` 时可以是它要求的同源地址。
+fn create_site_window(
+    app: &tauri::AppHandle,
+    site: &Site,
+    label: &str,
+    target: url::Url,
+) -> Result<(), String> {
     // 同一站点的第 2 个窗口起标题带序号，任务栏里能区分。
     let title = window_title(site, label);
     log_line(app, &format!("creating {label} -> {target}"));
@@ -815,6 +906,9 @@ fn create_site_window(app: &tauri::AppHandle, site: &Site, label: &str) -> Resul
     let shown_cb = shown.clone();
     let frameless = site.frameless;
     let site_name = title.clone();
+    // 供 on_new_window 回调（'static）使用
+    let new_win_app = app.clone();
+    let new_win_site = site.clone();
 
     // 先占位再创建（连续点两次「新窗口」不会抢同一个标签），创建失败时回滚。
     window_sites()
@@ -827,6 +921,32 @@ fn create_site_window(app: &tauri::AppHandle, site: &Site, label: &str) -> Resul
             .title(title)
             .initialization_script(render_script(app, site))
             .additional_browser_args(BROWSER_ARGS)
+            // 【必须关掉 Tauri 的拖放处理器】它在 Windows 上会对 WebView2 调
+            // `ICoreWebView2Controller4::SetAllowExternalDrop(false)`（见 wry webview2/mod.rs），
+            // 页面内的 HTML5 拖放就废了 —— SAS Studio「打开的程序 / 数据」的标签拖动排序正是这套
+            // dragstart/dragover/drop API（Tauri 文档原话：Windows 上要用 HTML5 拖放必须关掉它）。
+            // 我们并不使用 Tauri 的文件拖放事件，关掉后拖放回到浏览器默认行为，与 Edge 一致。
+            .disable_drag_drop_handler()
+            // Ctrl+滚轮 / 触控板缩放（wry 默认是关的，Edge PWA 里能用）
+            .zoom_hotkeys_enabled(true)
+            // 剪贴板读取：不开这个开关，wry 不会把 CLIPBOARD_READ 权限自动放行，
+            // 页面上的「粘贴」类按钮（navigator.clipboard.readText）会被拒。
+            .enable_clipboard_access()
+            // 页面里 target="_blank" / window.open() 的落点：不交给 WebView2 的默认弹窗
+            // （那个窗口没有注入脚本、没有 __TAURI__、也不在托盘与窗口注册表里），
+            // 改走我们自己的新建窗口流程 —— 保活 / PWA 伪装 / 无边框 / 编号标签全都一致。
+            // 注意：这个回调跑在 WebView2 的事件回调（主线程）里，创建窗口必须丢后台线程，
+            // 否则死锁（见文件顶部【关键规则】）。
+            .on_new_window(move |url, _features| {
+                let app = new_win_app.clone();
+                let site = new_win_site.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = create_new_site_window_at(&app, &site, Some(url)) {
+                        log_line(&app, &format!("page new window failed: {e}"));
+                    }
+                });
+                tauri::webview::NewWindowResponse::Deny
+            })
             .devtools(true)
             .inner_size(1280.0, 800.0)
             .min_inner_size(900.0, 600.0)
@@ -875,6 +995,30 @@ fn create_site_window(app: &tauri::AppHandle, site: &Site, label: &str) -> Resul
                 .unwrap_or_else(|e| format!("<err:{e}>"))
         ),
     );
+    // 权限请求接管（仅 Windows）：网页通知 / 剪贴板读取 / 多文件下载放行，其余记为日志。
+    // 必须在 webview 建好之后挂，所以放这里（窗口还没 show，页面也还没开始请求权限）。
+    if let Err(e) = permissions::install(&built, app.clone()) {
+        log_line(app, &format!("install permission handler {label} failed: {e}"));
+    }
+    // 站点专属窗口图标（任务栏上区分站点）：放这里而不是 builder 链上 ——
+    // `WebviewWindowBuilder::icon()` 返回 `Result`，会把 builder 链打断；而窗口此时还没 show，
+    // 任务栏按钮尚未创建，先设好后效果完全一样。图标只影响观感，失败不打断创建。
+    if let Err(e) = built.set_icon(site_window_icon(app, site)) {
+        log_line(app, &format!("set icon {label} failed: {e}"));
+    }
+    // 任务栏身份：每站点一个 AUMID → 任务栏上独立分组 / 独立图标。
+    // **必须在 show 之前设置**（Windows 在窗口变可见时才定格任务栏按钮），此刻窗口还是隐藏的。
+    #[cfg(windows)]
+    if let Ok(hwnd) = built.hwnd() {
+        match std::env::current_exe() {
+            Ok(exe) => {
+                if let Err(e) = taskbar::apply_site_identity(hwnd.0, &site.id, &site.name, &exe) {
+                    log_line(app, &format!("taskbar identity {label} failed: {e}"));
+                }
+            }
+            Err(e) => log_line(app, &format!("current_exe failed: {e}")),
+        }
+    }
     // 「标签 → 站点」在创建前就已登记（见上方占位说明），这里不再重复。
     // 不 show，等页面加载完成再显示（见 on_page_load）；只先登记为当前窗口。
     {
@@ -944,7 +1088,7 @@ fn open_site_window(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
         // 直接创建：在命令线程调用时 tauri 会把创建请求派发到事件循环，安全。
         let label = free_window_label(app, &site.id);
         log_line(app, &format!("open id={} label={label} url={target}", site.id));
-        create_site_window(app, &site, &label)?;
+        create_site_window(app, &site, &label, target)?;
     }
 
     // 记住最近打开的站点，下次启动自动恢复。
@@ -966,9 +1110,27 @@ fn open_site_window(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
 /// 当前登录身份 —— 等价于 Edge PWA 在同一 profile 下多开窗口。
 fn create_new_site_window(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     let site = get_site(id).ok_or_else(|| format!("未找到站点：{id}"))?;
+    create_new_site_window_at(app, &site, None)
+}
+
+/// 同上，但可指定初始地址（页面自己 `window.open(url)` 时用）。
+/// 只采信与站点同源的地址：否则外部链接会被塞进一个带注入脚本的站点窗口里。
+fn create_new_site_window_at(
+    app: &tauri::AppHandle,
+    site: &Site,
+    requested: Option<url::Url>,
+) -> Result<(), String> {
+    let base = url::Url::parse(&site.url).map_err(|e| format!("地址无效：{e}"))?;
+    let target = match requested {
+        Some(u) if same_site(&u, &base) => u,
+        _ => base,
+    };
     let label = free_window_label(app, &site.id);
-    log_line(app, &format!("new window id={} label={label}", site.id));
-    create_site_window(app, &site, &label)
+    log_line(
+        app,
+        &format!("new window id={} label={label} url={target}", site.id),
+    );
+    create_site_window(app, site, &label, target)
 }
 
 /// 打开设置窗口（本地 dist 页面）。
@@ -1081,6 +1243,13 @@ fn build_tray_menu<M: Manager<tauri::Wry>>(app: &M) -> Result<tauri::menu::Menu<
             .build(app)
             .map_err(|e| e.to_string())?;
         builder = builder.item(&newwin_item);
+
+        // 「彻底关闭」：销毁当前激活的站点窗口（不是隐藏到托盘）。
+        let closewin_item = MenuItemBuilder::with_id("closewindow", "彻底关闭当前窗口（当前环境）")
+            .enabled(active_id.is_some())
+            .build(app)
+            .map_err(|e| e.to_string())?;
+        builder = builder.item(&closewin_item);
 
         builder = builder.item(&item("reload", "重新加载当前页面")?);
         builder = builder.item(&item("showall", "显示全部窗口")?);
@@ -1200,6 +1369,42 @@ async fn new_site_window(app: tauri::AppHandle, id: String) -> Result<(), String
         return Err("请先保存站点配置，再新开窗口".to_string());
     }
     create_new_site_window(&app, &id)
+}
+
+/// 站点窗口自绘标题条的「✕」：彻底关闭当前窗口（销毁 WebView，不是隐藏到托盘）。
+///
+/// 走自定义命令而不是 JS 的 `close()`：`close()` 会派发 `CloseRequested`，被上面的
+/// 「关闭即隐藏」拦下就永远关不掉了。
+#[tauri::command]
+async fn close_window(app: tauri::AppHandle, window: tauri::Window) -> Result<(), String> {
+    destroy_site_window(&app, window.label());
+    Ok(())
+}
+
+/// 设置页站点行的「关闭窗口」：关掉该站点的全部窗口（销毁，不是隐藏）。
+#[tauri::command]
+async fn close_site_windows(app: tauri::AppHandle, site_id: String) -> Result<usize, String> {
+    let labels = site_window_labels(&app, &site_id);
+    let count = labels.len();
+    for label in labels {
+        destroy_site_window(&app, &label);
+    }
+    log_line(&app, &format!("close site windows: site={site_id} count={count}"));
+    Ok(count)
+}
+
+/// 设置页：各站点当前已开的窗口数（显示「N 个窗口」，并决定「关闭窗口」是否可点）。
+#[tauri::command]
+async fn site_window_counts(app: tauri::AppHandle) -> Result<HashMap<String, usize>, String> {
+    let sites = cfg_state().lock().unwrap().sites.clone();
+    let mut counts = HashMap::new();
+    for site in sites {
+        let n = site_window_labels(&app, &site.id).len();
+        if n > 0 {
+            counts.insert(site.id, n);
+        }
+    }
+    Ok(counts)
 }
 
 /// 设置页用：关闭自身（实际是隐藏，保留状态）。
@@ -1354,12 +1559,30 @@ pub fn run() {
         }
     }));
 
+    // 窗口位置 / 尺寸记忆（按窗口 label 记录：同一站点的第 2、3 个窗口各记各自的）。
+    // 刻意**不含** VISIBLE / DECORATIONS / FULLSCREEN：
+    //   * 我们的窗口是「隐藏创建 → 页面加载完再 show」，恢复可见性会跟「关闭 = 隐藏到托盘」打架
+    //     （插件默认 flags 是 all()，包含 VISIBLE，会把窗口恢复成隐藏/显示而不是我们要的状态）；
+    //   * 无边框由站点配置决定，不该由窗口状态恢复。
+    builder = builder.plugin(
+        tauri_plugin_window_state::Builder::new()
+            .with_state_flags(
+                tauri_plugin_window_state::StateFlags::POSITION
+                    | tauri_plugin_window_state::StateFlags::SIZE
+                    | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+            )
+            .build(),
+    );
+
     builder
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
             open_site,
             new_site_window,
+            close_window,
+            close_site_windows,
+            site_window_counts,
             hide_settings,
             set_ui_theme,
             set_render_mode,
@@ -1460,6 +1683,14 @@ pub fn run() {
                         });
                     }
                 }
+                "closewindow" => {
+                    // 托盘里的「彻底关闭」：销毁当前激活的站点窗口（后台线程里做，不阻塞回调）。
+                    let label = active_window().lock().unwrap().clone();
+                    if !label.is_empty() {
+                        let app = app.clone();
+                        std::thread::spawn(move || destroy_site_window(&app, &label));
+                    }
+                }
                 "reload" => {
                     let label = active_window().lock().unwrap().clone();
                     if let Some(w) = app.get_webview_window(&label) {
@@ -1482,13 +1713,35 @@ pub fn run() {
         .on_window_event(|window, event| {
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
-                    // 所有窗口关闭时都只隐藏到托盘，保持会话存活。
+                    // 关闭一律「收进托盘」：页面继续跑、保活脉冲继续，会话不会被服务端按空闲超时回收。
+                    // 要真正释放窗口（销毁 WebView、回收内存）走这三个入口：
+                    // 自绘标题条的 ✕、托盘「彻底关闭当前窗口（当前环境）」、设置页站点行的「关闭窗口」。
                     api.prevent_close();
                     let _ = window.hide();
                 }
                 // 窗口真被销毁（退出前 / 主动 destroy）时清掉注册表，别留着孤儿标签。
                 tauri::WindowEvent::Destroyed => {
-                    window_sites().lock().unwrap().remove(window.label());
+                    // 收尾统一放这里（`destroy()` 与「放行的关闭」都会走到）：先取站点 id 再清注册表，
+                    // 之后才查得到「同站点还剩哪些窗口」用来接管「当前窗口」。
+                    let label = window.label().to_string();
+                    let site_id = site_id_of_label(&label);
+                    window_sites().lock().unwrap().remove(&label);
+                    log_line(window.app_handle(), &format!("destroyed {label}"));
+                    // 不要在这个回调里碰窗口表 / 托盘（可能正握着管理器锁）：丢后台线程做。
+                    let app = window.app_handle().clone();
+                    std::thread::spawn(move || {
+                        let mut active = active_window().lock().unwrap();
+                        if *active == label {
+                            // 关掉的正是当前窗口 → 交给同站点其它窗口；一个都不剩就清空
+                            // （托盘左键会回落到「打开设置页」）。
+                            *active = site_id
+                                .as_deref()
+                                .and_then(|id| site_window_labels(&app, id).into_iter().next())
+                                .unwrap_or_default();
+                        }
+                        drop(active);
+                        let _ = refresh_tray(&app);
+                    });
                 }
                 // 记住最后一个获得焦点的站点窗口：托盘左键显隐、菜单「无边框窗口」都以它为准。
                 tauri::WindowEvent::Focused(true) => {

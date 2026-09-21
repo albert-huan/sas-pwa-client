@@ -20,6 +20,8 @@
     "allow-save-config",
     "allow-open-site",
     "allow-new-site-window",
+    "allow-close-site-windows",
+    "allow-site-window-counts",
     "allow-hide-settings",
     "allow-set-render-mode",
     "allow-show-settings",

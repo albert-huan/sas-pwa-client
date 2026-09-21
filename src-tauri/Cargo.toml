@@ -1,6 +1,6 @@
 [package]
 name = "sas-pwa-client"
-version = "0.2.9"
+version = "0.2.10"
 description = "SAS PWA 独立客户端 (Tauri 包装 SAS Viya 站点，站点地址可配置)"
 authors = ["Albert"]
 edition = "2021"
@@ -23,9 +23,17 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-png", "devtools"] }
 tauri-plugin-single-instance = "2"
+# 窗口位置/尺寸记忆（按窗口 label 存，见 run() 里的 StateFlags 说明）
+tauri-plugin-window-state = "2"
 url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+# WebView2 COM 接口：用来手动挂 PermissionRequested（Tauri 没暴露）。
+# 版本必须与 tauri 2.11 用的那一份一致（tauri-runtime-wry / wry 都要求 0.38），
+# 否则 controller 的类型来自不同 crate 实例、编译期就对不上。
+webview2-com = "0.38"
 
 [profile.release]
 panic = "abort"

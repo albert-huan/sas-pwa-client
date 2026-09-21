@@ -53,6 +53,8 @@ let state = {
   // 渲染模式与平台：Linux 才有这个设置（改的是 WebKitGTK 的渲染路径，重启后生效）。
   renderMode: "auto",
   platform: "",
+  // 各站点已开的窗口数（后端查，详见 refreshWindowCounts）：无窗口则没有该键。
+  windowCounts: {},
 };
 
 function invoke(cmd, args) {
@@ -130,6 +132,13 @@ function renderList() {
       badge.textContent = t("badge.default");
       name.appendChild(badge);
     }
+    const winCount = state.windowCounts[s.id] || 0;
+    if (winCount > 0) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = t("list.windowCount", { n: winCount });
+      name.appendChild(badge);
+    }
     const url = document.createElement("div");
     url.className = "url";
     url.textContent = s.url;
@@ -141,6 +150,8 @@ function renderList() {
       mkBtn(t("list.open"), () => openSite(s.id), "primary sm"),
       // 「新窗口」：为同一站点再开一个窗口，与已有窗口共享同一份登录态（同一账号多开）。
       mkBtn(t("list.newWindow"), () => openSiteNewWindow(s.id), "sm"),
+      // 「关闭窗口」：彻底关闭该站点的全部窗口（销毁 WebView）。没有窗口时置灰。
+      mkBtn(t("list.closeWindows"), () => closeSiteWindows(s.id), "sm", winCount === 0),
       mkBtn(t("list.edit"), () => startEdit(i), "sm"),
       mkBtn(s.default ? t("list.unsetDefault") : t("list.setDefault"), () => setDefault(i, !s.default), "sm"),
       mkBtn(t("list.delete"), () => removeSite(i), "sm danger")
@@ -151,11 +162,12 @@ function renderList() {
   });
 }
 
-function mkBtn(text, onClick, cls = "") {
+function mkBtn(text, onClick, cls = "", disabled = false) {
   const b = document.createElement("button");
   b.className = `btn ${cls}`.trim();
   b.type = "button";
   b.textContent = text;
+  b.disabled = !!disabled;
   b.addEventListener("click", onClick);
   return b;
 }
@@ -262,6 +274,7 @@ async function openSite(id) {
   toast(t("toast.opening"));
   try {
     await invoke("open_site", { id });
+    void refreshWindowCounts();
   } catch (e) {
     toast(t("toast.openFail", { e }), true);
   }
@@ -279,9 +292,40 @@ async function openSiteNewWindow(id) {
   toast(t("toast.opening"));
   try {
     await invoke("new_site_window", { id });
+    void refreshWindowCounts();
   } catch (e) {
     toast(t("toast.openFail", { e }), true);
   }
+}
+
+/**
+ * 刷新各站点已开的窗口数（后端查询）。窗口是用户在站点窗那边开关的，
+ * 设置页这边只能在自己重新拿到焦点时、以及开/关窗口之后主动问一次。
+ */
+async function refreshWindowCounts() {
+  if (!ENABLED) return;
+  try {
+    state.windowCounts = (await invoke("site_window_counts")) || {};
+    renderList();
+  } catch (e) {
+    /* 查不到就当没有窗口，不影响其它功能 */
+  }
+}
+
+/**
+ * 彻底关闭该站点的全部窗口（销毁 WebView、回收内存）。
+ * 「隐藏到托盘继续保活」是另一回事：用站点窗口标题条的 × 或托盘左键。
+ */
+async function closeSiteWindows(id) {
+  if (!id) return;
+  if (!(state.windowCounts[id] || 0)) return;
+  try {
+    const closed = await invoke("close_site_windows", { siteId: id });
+    toast(t("toast.windowsClosed", { n: closed }));
+  } catch (e) {
+    toast(t("toast.closeWinFail", { e }), true);
+  }
+  refreshWindowCounts();
 }
 
 async function removeSite(i) {
@@ -395,6 +439,8 @@ async function load() {
     renderList();
     renderForm();
     renderRenderSection();
+    // 已开窗口数不在配置里，单独查一次（拿不到就当作没有窗口）。
+    void refreshWindowCounts();
   } catch (e) {
     toast(t("toast.loadFail", { e }), true);
   }
@@ -557,6 +603,12 @@ if (!ENABLED) {
     el(id).disabled = true;
   });
 }
+
+// 设置窗重新拿到焦点时刷新「已开窗口数」：窗口是用户在站点窗那边开关的，
+// 只有这时才需要重新问后端（后端查的是真实窗口表）。
+window.addEventListener("focus", () => {
+  void refreshWindowCounts();
+});
 
 // 启动：先应用当前语言的静态文案（含窗口标题），再初始化语言切换器与动态区域。
 applyI18n();

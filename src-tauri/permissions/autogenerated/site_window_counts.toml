@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-site-window-counts"
+description = "Enables the site_window_counts command without any pre-configured scope."
+commands.allow = ["site_window_counts"]
+
+[[permission]]
+identifier = "deny-site-window-counts"
+description = "Denies the site_window_counts command without any pre-configured scope."
+commands.deny = ["site_window_counts"]

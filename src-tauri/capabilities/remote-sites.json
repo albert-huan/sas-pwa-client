@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "remote-sites",
-  "description": "远程 SAS 站点页面（site-* 窗口）所需的最小 IPC 权限：自绘标题条的隐藏/最小化/拖动、F11 切换无边框、打开站点设置。不含配置写入与凭据读写——地址由用户在设置窗口填写，不允许页面自行改动。",
+  "description": "远程 SAS 站点页面（site-* 窗口）所需的最小 IPC 权限：自绘标题条的隐藏/彻底关闭/最小化/拖动、F11 切换无边框、打开站点设置。不含配置写入与凭据读写——地址由用户在设置窗口填写，不允许页面自行改动。",
   "windows": ["site-*"],
   "local": false,
   "remote": {
@@ -13,6 +13,7 @@
     "core:window:allow-start-dragging",
     "core:webview:allow-internal-toggle-devtools",
     "allow-toggle-frameless",
-    "allow-show-settings"
+    "allow-show-settings",
+    "allow-close-window"
   ]
 }
