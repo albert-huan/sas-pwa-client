@@ -801,21 +801,57 @@ fn render_script(app: &tauri::AppHandle, site: &Site) -> String {
         .replace("__CRED_AUTO__", if auto_login { "true" } else { "false" })
 }
 
+/// 日志滚动阈值：单个 debug.log 超过它就挪成 `debug.log.1` 重新写。
+const LOG_MAX_BYTES: u64 = 1024 * 1024;
+/// 轮转时保留的上一份日志文件名。只留一份 —— 排查通常只看最近一段，留多了白占空间。
+const LOG_BACKUP: &str = "debug.log.1";
+/// 每写这么多条才 stat 一次文件大小：`log_line` 在页面每次 navigation / page-load 都会被调用，
+/// 逐条 stat 不划算，而滚动本身也不需要那么精确。
+const LOG_SIZE_CHECK_EVERY: u64 = 64;
+
 /// 诊断日志：追加到配置目录的 debug.log，便于远程排查（对正常使用无影响）。
+///
+/// **必须滚动**：本客户端是常驻进程（「关闭」只是隐藏到托盘），而 SAS 页面会不断发请求、
+/// 触发 page-load / permission 日志，几个月下来 debug.log 能长到几百 MB，既占磁盘也让
+/// 远程取日志变得困难。代价是每 `LOG_SIZE_CHECK_EVERY` 条一次 stat、滚动时一次 rename。
 fn log_line(app: &tauri::AppHandle, msg: &str) {
+    static WRITTEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     if let Ok(dir) = app.path().app_config_dir() {
         let _ = std::fs::create_dir_all(&dir);
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("debug.log"))
-        {
-            let _ = std::io::Write::write_fmt(&mut f, format_args!("[{secs}] {msg}\n"));
+        let path = dir.join("debug.log");
+
+        let n = WRITTEN.fetch_add(1, Ordering::Relaxed);
+        if n % LOG_SIZE_CHECK_EVERY == 0 {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if meta.len() > LOG_MAX_BYTES {
+                    let backup = dir.join(LOG_BACKUP);
+                    // 上一轮备份删不掉（被占用？）时 rename 也会失败，那就继续追加，不致命。
+                    let _ = std::fs::remove_file(&backup);
+                    if std::fs::rename(&path, &backup).is_ok() {
+                        log_append(
+                            &path,
+                            &format!(
+                                "[{secs}] debug.log 已达 {} 字节，已滚动为 {LOG_BACKUP}",
+                                meta.len()
+                            ),
+                        );
+                    }
+                }
+            }
         }
+        log_append(&path, &format!("[{secs}] {msg}"));
+    }
+}
+
+/// 往日志文件追加一行（文件不存在就创建）。滚动失败、并发 rename 撞车都只会丢这一行，不影响主流程。
+fn log_append(path: &std::path::Path, line: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = std::io::Write::write_fmt(&mut f, format_args!("{line}\n"));
     }
 }
 
@@ -896,6 +932,9 @@ fn create_site_window(
     label: &str,
     target: url::Url,
 ) -> Result<(), String> {
+    // 是否允许在这个站点窗口里打开 DevTools。默认关闭，理由见 `AppConfig::dev_tools`：
+    // 窗口里跑的是远程 SAS 页面，开着 DevTools 等于把注入脚本里的登录凭据摆出来。
+    let dev_tools = cfg_state().lock().unwrap().dev_tools;
     // 同一站点的第 2 个窗口起标题带序号，任务栏里能区分。
     let title = window_title(site, label);
     log_line(app, &format!("creating {label} -> {target}"));
@@ -947,7 +986,7 @@ fn create_site_window(
                 });
                 tauri::webview::NewWindowResponse::Deny
             })
-            .devtools(true)
+            .devtools(dev_tools)
             .inner_size(1280.0, 800.0)
             .min_inner_size(900.0, 600.0)
             .decorations(!site.frameless)
@@ -1028,7 +1067,8 @@ fn create_site_window(
     apply_frameless(app, site);
 
     // 兜底：
-    //  1) 1.5s 后复查窗口实际地址，不对就重新导航一次（防止首次导航丢失导致白屏）；
+    //  1) 1.5s 后确认导航真的发生了 —— 没发生（还停在 about:blank）才补一次导航，防白屏；
+    //     已经跳走到任何 http(s) 地址都不要干预（详见下面第一个 if 的注释：SSO）。
     //  2) 再过 2s 无论页面有没有触发 Finished（证书错误 / 登录跳转卡住）都强制显示，
     //     否则窗口一直隐藏，看起来就像「点了打开没反应」。
     let handle = app.clone();
@@ -1043,15 +1083,29 @@ fn create_site_window(
                 .map(|u| u.to_string())
                 .unwrap_or_else(|e| format!("<err:{e}>"));
             log_line(&handle, &format!("post-check {lbl}: url={cur}"));
-            let ok = url::Url::parse(&cur).map(|c| same_site(&c, &tgt)).unwrap_or(false);
-            if ok {
-                // 导航已经发生，直接显示，不等 Finished（有些站点一直挂着重定向不会 Finished）。
+            // 判据是「有没有真的导航过」，而不是「在不在目标站」—— 这一点很关键：
+            // SAS 站点普遍走 SSO，打开站点后 WebView 可能被重定向到**另一个 host** 的登录页
+            // （外部 IdP、独立部署的 SASLogon 等）。当初这里按「地址与目标站不符 = 首次导航丢了」
+            // 直接 navigate 回站点首页，结果是：① 用户正在填的登录表单被整页刷新冲掉；
+            // ② IdP 回跳后又被拉回来，来回重定向形成登录死循环。
+            //
+            // 导航真的没发生时，地址仍会是 about:blank（不是 http/https），只有这种情况才需要补导航。
+            // 页面处在 SSO 跳转链的哪一环都算「正常工作」，别碰它的地址。
+            let scheme = url::Url::parse(&cur)
+                .map(|u| u.scheme().to_ascii_lowercase())
+                .unwrap_or_default();
+            if scheme == "http" || scheme == "https" {
+                // 已经落在某个页面上了（包括 SSO 跳转的中间态）：只保证窗口被显示出来，
+                // 不等 Finished（有些站点一直挂着重定向，永远等不到）。
                 if !shown_thread.swap(true, Ordering::SeqCst) {
                     let _ = w.show();
                     let _ = w.set_focus();
                 }
             } else {
-                log_line(&handle, &format!("post-check mismatch -> navigate {tgt}"));
+                log_line(
+                    &handle,
+                    &format!("post-check 尚未发生导航（url={cur}） -> navigate {tgt}"),
+                );
                 let _ = w.navigate(tgt);
             }
             std::thread::sleep(std::time::Duration::from_millis(2000));
@@ -1074,12 +1128,20 @@ fn open_site_window(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     if let Some(label) = active_or_first_window(app, &site.id) {
         log_line(app, &format!("open id={} label={label} url={target}", site.id));
         if let Some(w) = app.get_webview_window(&label) {
-            // 地址被改过才重新导航，避免每次点击都整页刷新、丢掉会话状态。
-            let stale = match w.url() {
-                Ok(cur) => !same_site(&cur, &target),
+            // 只有「压根没导航过」（还停在 about:blank）才补一次地址。
+            //
+            // 不按「地址与目标站不符」来纠偏，理由同 `create_site_window` 的 post-check：
+            // 窗口很可能正停在 SSO 跳转链上（外部 IdP 的页面，host 与站点不同），
+            // 这时导航过去会把用户正在进行的登录冲掉；而每次点击都整页刷新
+            // 又会丢掉会话状态（原注释担心的正是这一点）—— 两种情况都该保守。
+            let needs_url = match w.url() {
+                Ok(cur) => {
+                    let scheme = cur.scheme().to_ascii_lowercase();
+                    !(scheme == "http" || scheme == "https")
+                }
                 Err(_) => true,
             };
-            if stale {
+            if needs_url {
                 let _ = w.navigate(target);
             }
         }
@@ -1141,6 +1203,8 @@ fn open_settings(app: &tauri::AppHandle) {
     }
     // 同样直接创建（不要走 run_on_main_thread，理由见文件顶部说明）。
     // 系统语言随窗口注入：i18n.js 的「跟随系统」以此为准（WebView2 的 navigator.language 不可尽信）。
+    // DevTools 开关：默认关闭（见 `AppConfig::dev_tools`）。
+    let dev_tools = cfg_state().lock().unwrap().dev_tools;
     let lang = system_lang_tag();
     let init_script = format!("window.__SAS_SYS_LANG__ = {};", js_string(&lang));
     log_line(app, &format!("settings window system lang: {lang:?}"));
@@ -1150,10 +1214,12 @@ fn open_settings(app: &tauri::AppHandle) {
             SETTINGS_LABEL,
             tauri::WebviewUrl::App("index.html".into()),
         )
-        .title("SAS 客户端 · 设置")
+        // 标题用中英一致的品牌名：窗口一显示就会被前端的 syncWindowTitle() 换成
+        // 当前语言的标题，写死中文的话英文界面下会先闪一下中文（中文下两处文案也不同）。
+        .title("SAS PWA Client")
         .initialization_script(&init_script)
         .additional_browser_args(BROWSER_ARGS)
-        .devtools(true)
+        .devtools(dev_tools)
         .inner_size(1120.0, 860.0)
         .min_inner_size(720.0, 560.0)
         .resizable(true)
@@ -1270,6 +1336,7 @@ fn get_config(app: tauri::AppHandle) -> serde_json::Value {
         "last_site_id": cfg.last_site_id,
         "ui_theme": cfg.ui_theme,
         "render_mode": cfg.render_mode,
+        "dev_tools": cfg.dev_tools,
         // 设置页据此决定要不要显示「Linux 渲染」区块。
         "platform": std::env::consts::OS,
         "config_path": config::config_path(&app).map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
@@ -1277,18 +1344,25 @@ fn get_config(app: tauri::AppHandle) -> serde_json::Value {
     })
 }
 
-/// 保存配置：校验 → 落盘 → 更新内存 → 刷新托盘 → 同步已打开窗口的外观。
+/// 保存配置：校验 → 落盘 → 更新内存 → 刷新托盘 → 同步已打开窗口的外观与地址。
 #[tauri::command]
 fn save_config(app: tauri::AppHandle, sites: Vec<Site>) -> Result<Vec<Site>, String> {
-    let (prev_last, prev_theme, prev_render) = {
+    let (prev_last, prev_theme, prev_render, prev_dev_tools, prev_sites) = {
         let g = cfg_state().lock().unwrap();
-        (g.last_site_id.clone(), g.ui_theme.clone(), g.render_mode.clone())
+        (
+            g.last_site_id.clone(),
+            g.ui_theme.clone(),
+            g.render_mode.clone(),
+            g.dev_tools,
+            g.sites.clone(),
+        )
     };
     let mut cfg = AppConfig {
         sites,
         last_site_id: prev_last,
         ui_theme: prev_theme,
         render_mode: prev_render,
+        dev_tools: prev_dev_tools,
     };
     config::normalize(&mut cfg)?;
     config::save(&app, &cfg)?;
@@ -1304,8 +1378,48 @@ fn save_config(app: tauri::AppHandle, sites: Vec<Site>) -> Result<Vec<Site>, Str
         apply_frameless(&app, site);
     }
 
-    // 站点被删除后，别在凭据文件里留下孤儿记录。
     let alive: Vec<String> = cfg.sites.iter().map(|s| s.id.clone()).collect();
+
+    // 站点被删除 —— 把它名下还在跑的窗口一并销毁。
+    //
+    // 不这么做的话，这些窗口会变成「孤儿」：窗口归属是靠 WINDOW_SITES 注册表查的，但站点归属
+    // 的兜底路径（`site_id_of_label`）里有一条是拿 label 去**配置里**找站点，站点一删这条就断了，
+    // 于是托盘的「彻底关闭当前窗口 / 新建窗口 / 无边框」对该窗口全部置灰 ——
+    // **这个窗口再也没有途径被彻底关闭**（只能 × 隐藏到托盘，WebView 永不释放）。
+    // 设置页的「N 个窗口」计数同样看不到它。
+    for old in &prev_sites {
+        if alive.iter().any(|id| id == &old.id) {
+            continue;
+        }
+        for label in site_window_labels(&app, &old.id) {
+            log_line(&app, &format!("站点已删除，销毁孤儿窗口 {label}"));
+            destroy_site_window(&app, &label);
+        }
+    }
+
+    // 站点地址改了 —— 让它已开的窗口跟着走，否则窗口里还是旧地址，
+    // 用户会以为「改了没生效」（只有下次全新打开才会用到新地址）。
+    for site in &cfg.sites {
+        let changed = prev_sites
+            .iter()
+            .find(|o| o.id == site.id)
+            .map(|o| o.url != site.url)
+            .unwrap_or(false);
+        if !changed {
+            continue;
+        }
+        let Ok(target) = url::Url::parse(&site.url) else {
+            continue;
+        };
+        for label in site_window_labels(&app, &site.id) {
+            if let Some(w) = app.get_webview_window(&label) {
+                log_line(&app, &format!("地址已更新，重新导航 {label} -> {target}"));
+                let _ = w.navigate(target.clone());
+            }
+        }
+    }
+
+    // 站点被删除后，别在凭据文件里留下孤儿记录。
     if let Err(e) = credentials::prune(&app, &alive) {
         eprintln!("[SAS PWA 客户端] 清理凭据失败：{e}");
     }
@@ -1313,9 +1427,6 @@ fn save_config(app: tauri::AppHandle, sites: Vec<Site>) -> Result<Vec<Site>, Str
     Ok(cfg.sites)
 }
 
-/// 打开指定站点；不传 id 时按「默认登录环境 → 最近打开 → 第一个」的顺序挑一个。
-///
-/// 必须是 async：同步命令在主线程（IPC 回调栈）里执行，会触发窗口创建死锁，
 /// 保存 UI 主题偏好（system / light / dark），不影响站点配置。
 #[tauri::command]
 fn set_ui_theme(app: tauri::AppHandle, theme: String) -> Result<(), String> {
@@ -1323,6 +1434,67 @@ fn set_ui_theme(app: tauri::AppHandle, theme: String) -> Result<(), String> {
     cfg.ui_theme = theme;
     config::save(&app, &cfg)?;
     *cfg_state().lock().unwrap() = cfg;
+    Ok(())
+}
+
+/// 保存是否允许在窗口里打开开发者工具（F12 / 右键「检查」）。
+///
+/// **默认关闭**，而且只影响**之后新建的窗口**（wry 的 devtools 只能在 WebView 初始化时决定，
+/// 已经跑起来的窗口改不了）。为什么默认关：站点窗口承载的是远程 SAS 页面，
+/// DevTools 一旦可用，能碰到这个窗口的人就能读到注入脚本里用于自动填充的登录凭据。
+/// 排查完页面问题建议关回去。
+#[tauri::command]
+fn set_dev_tools(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let mut cfg = cfg_state().lock().unwrap().clone();
+    cfg.dev_tools = enabled;
+    config::save(&app, &cfg)?;
+    *cfg_state().lock().unwrap() = cfg;
+    log_line(&app, &format!("dev tools saved: {enabled}（对新打开的窗口生效）"));
+    Ok(())
+}
+
+/// 用系统默认浏览器打开链接（设置页「检查更新」跳到 Release 页用）。
+///
+/// 两道限制，避免这条命令变成「打开任意网址」的跳板：
+///   1) 只接受 http/https，且主机名必须在下面这份白名单里（含子域）；
+///   2) **只授权给本地设置窗口** —— remote-sites.json 里没有 `allow-open-url`，
+///      远程 SAS 页面调不到它。
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    let parsed = url::Url::parse(url.trim()).map_err(|e| format!("链接无效：{e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => return Err(format!("只支持 http/https 链接（收到 {other}）")),
+    }
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    const ALLOWED_DOMAINS: [&str; 2] = ["github.com", "githubusercontent.com"];
+    let allowed = ALLOWED_DOMAINS
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")));
+    if !allowed {
+        return Err(format!("不允许打开该域名：{host}"));
+    }
+
+    let url = parsed.to_string();
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        /// 别让 cmd 闪一个黑色控制台窗口。
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // `start "" <url>`：那个空的标题参数是必须的，否则 start 会把 URL 当成窗口标题。
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| format!("打开浏览器失败：{e}"))?;
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("打开浏览器失败（需要 xdg-open）：{e}"))?;
+    }
     Ok(())
 }
 
@@ -1341,7 +1513,10 @@ fn set_render_mode(app: tauri::AppHandle, mode: String) -> Result<String, String
     Ok(mode)
 }
 
-/// 详见文件上半部分 `create_site_window` 上方的说明。
+/// 打开指定站点；不传 id 时按「默认登录环境 → 最近打开 → 第一个」的顺序挑一个。
+///
+/// 必须是 async：同步命令运行在主线程的 IPC 回调栈里，从那里创建窗口会死锁，
+/// 详见文件上方【关键规则】。
 #[tauri::command]
 async fn open_site(app: tauri::AppHandle, id: Option<String>) -> Result<(), String> {
     let id = id.or_else(|| {
@@ -1537,6 +1712,60 @@ fn clear_credential(app: tauri::AppHandle, site_id: String) -> Result<(), String
     Ok(())
 }
 
+// ---------------- 命令行开关 ----------------
+//
+// 为什么需要：Linux 上的托盘图标依赖 StatusNotifier 宿主，部分桌面环境（WSLg、精简的 X11
+// 会话等）根本没有 —— 托盘看不见，就意味着既没办法「收进托盘」，也没办法退出（托盘的「退出」
+// 是唯一入口），只能去杀进程。给命令行开关补上这两个缺口；Windows 上也能用来写脚本 / 快捷方式。
+//
+//   --quit / --exit / -q   退出正在运行的实例
+//   --hide                 把全部窗口收起来（等同于逐个按「隐藏到托盘」）
+//
+// 两个时机都要认：
+//   * 已经有一个实例在跑 → 新进程本身不建窗口，只把动作转达过去（单实例插件的回调里处理）；
+//   * 自己是第一个实例   → `--quit` 直接退出（既然目标就是「不要有实例在跑」），
+//                          `--hide` 没有窗口可藏，按正常启动走。
+
+/// 命令行里能识别的动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliAction {
+    Quit,
+    Hide,
+}
+
+/// 从参数表解析动作；`--quit` 优先于 `--hide`（argv[0] 是程序路径，会自然落进 `_` 分支）。
+fn cli_action<S: AsRef<str>>(args: &[S]) -> Option<CliAction> {
+    let mut hide = false;
+    for arg in args {
+        match arg.as_ref() {
+            "--quit" | "--exit" | "-q" => return Some(CliAction::Quit),
+            "--hide" => hide = true,
+            _ => {}
+        }
+    }
+    hide.then_some(CliAction::Hide)
+}
+
+/// 执行命令行动作。
+fn run_cli_action(app: &tauri::AppHandle, action: CliAction) {
+    match action {
+        CliAction::Quit => {
+            log_line(app, "cli: quit");
+            app.exit(0);
+        }
+        CliAction::Hide => {
+            // 连设置窗口一起收起来：用户的意图是「把客户端收起来」，留一个设置窗在外面更费解。
+            let labels: Vec<String> = app.webview_windows().keys().cloned().collect();
+            for label in labels {
+                if let Some(w) = app.get_webview_window(&label) {
+                    let _ = w.hide();
+                }
+            }
+            log_line(app, "cli: hide");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Linux（WebKitGTK）适配必须在 Tauri 初始化之前完成（DMA-BUF 开关、中文字体检查）。
@@ -1549,7 +1778,12 @@ pub fn run() {
     let mut builder = tauri::Builder::default();
 
     // 单实例锁：避免重复启动；再次启动时聚焦最近使用的窗口。
-    builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+    builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        // 命令行动作优先：`sas-pwa-client --quit` 的意图是退出，不是把窗口聚焦到眼前。
+        if let Some(action) = cli_action(&argv) {
+            run_cli_action(app, action);
+            return;
+        }
         // 重复启动只做聚焦：有活动窗口就切过去，否则打开设置窗口（不自动创建站点窗口）。
         let label = active_window().lock().unwrap().clone();
         if label.is_empty() {
@@ -1586,6 +1820,8 @@ pub fn run() {
             hide_settings,
             set_ui_theme,
             set_render_mode,
+            set_dev_tools,
+            open_url,
             toggle_frameless,
             show_settings,
             get_credential,
@@ -1608,6 +1844,14 @@ pub fn run() {
 
             if !linux_notes.is_empty() {
                 log_line(app.handle(), &format!("linux: {linux_notes}"));
+            }
+
+            // 命令行开关（见文件上方说明）：走到这里说明当前进程就是第一个实例，没有别的实例
+            // 可以转达。`--quit` 的意图是「不要有实例在跑」，那就直接退出、不建任何窗口；
+            // `--hide` 此时没有窗口可藏，按正常启动处理即可。
+            if cli_action(&std::env::args().collect::<Vec<String>>()) == Some(CliAction::Quit) {
+                run_cli_action(app.handle(), CliAction::Quit);
+                return Ok(());
             }
 
             let _ = build_tray_at_startup(app.handle());

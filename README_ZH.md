@@ -36,8 +36,11 @@ PWA 安装）；同时站点地址可由用户配置，而不是写死在二进�
 - **托盘常驻**：关闭窗口只是隐藏到托盘，会话继续存活。
 - **无边框模式**：可选自绘标题条（可拖动、最小化、隐藏到托盘）。
 - **单实例**：再次启动只会聚焦已运行的实例。
-- **DevTools**：release 版也能按 F12（已开启 `devtools` feature）。
-- **凭据加密保存（DPAPI）**：可选在 Windows 上用 DPAPI 保存用户名 / 密码，密码永不下发前端。
+- **检查更新**：设置页右上角「检查更新」比对 GitHub 上最新版本，有新版本用系统浏览器打开下载页。
+- **DevTools（默认关闭）**：站点窗口承载的是远程 SAS 页面，开着就等于把注入脚本里用于自动填充的
+  登录凭据摆出来，所以默认关闭，需要在设置页「高级」里显式开启（对新打开的窗口生效）。
+- **凭据保存**：Windows 用 DPAPI 加密（绑定当前账户 + 本机）；**其它平台没有 DPAPI，只做十六进制
+  编码、等同明文**，设置页会如实提示。密码永不下发前端。
 
 ---
 
@@ -102,6 +105,14 @@ WEBKIT_DISABLE_COMPOSITING_MODE=1 sas-pwa-client  # 再退一步：完全关闭�
 窗口被遮挡后会丢弃窗口内容，切回来必然整窗重绘 —— 这时开合成器（`picom`、`xfwm4 --composer=on`，
 或换 GNOME / KDE / Wayland 会话）比换渲染模式有用得多。
 
+**托盘看不见、连退出都点不到**：托盘图标依赖桌面的 StatusNotifier 宿主，部分环境（WSLg、精简的 X11
+会话）根本没有，托盘完全不显示 —— 托盘的「退出」是唯一退出入口，于是只能去杀进程。用命令行开关即可：
+
+```bash
+sas-pwa-client --hide    # 把全部窗口收起来（等同于逐个「隐藏到托盘」）
+sas-pwa-client --quit    # 退出正在运行的实例
+```
+
 ---
 
 ## 构建 / 运行
@@ -137,6 +148,10 @@ npm run tauri build    # 构建：dist/ 前端 + msi/nsis 安装包
    「退出」。
 5. 托盘**左键**切换最近使用窗口的显隐；**关闭窗口**只会隐藏到托盘（SAS 会话不断），真正退出请用
    托盘「退出」。
+6. **命令行开关**（Linux 上没有托盘宿主时尤其有用，Windows 也可用于脚本 / 快捷方式）：
+   - `sas-pwa-client --hide` —— 把全部窗口收起来（等同于逐个「隐藏到托盘」）；
+   - `sas-pwa-client --quit` —— 退出正在运行的实例（应用没在跑时直接退出、不建窗口）。
+   已经有一个实例在跑时，新进程只负责把动作转达过去，不会再开一个。
 
 ### 站点级选项
 
@@ -168,7 +183,10 @@ npm run tauri build    # 构建：dist/ 前端 + msi/nsis 安装包
       "default": true
     }
   ],
-  "last_site_id": "prod"
+  "last_site_id": "prod",
+  "ui_theme": "system",
+  "render_mode": "auto",
+  "dev_tools": false
 }
 ```
 
@@ -183,7 +201,7 @@ src-tauri/
   src/lib.rs                 壳逻辑：窗口、托盘、命令、注入脚本
   src/config.rs              配置模型、校验、持久化
   src/credentials.rs         加密凭据存储（Windows DPAPI）
-  capabilities/default.json  settings 与 site-* 窗口的最小 IPC 权限
+  capabilities/default.json  本地设置窗口的 IPC 权限（远程站点页走 remote-sites.json）
   icons/                     应用图标
 dist/                        构建后的前端（作为设置窗口加载）
 ```
@@ -192,12 +210,22 @@ dist/                        构建后的前端（作为设置窗口加载）
 
 | 命令                   | 作用                                                                 |
 | ---------------------- | -------------------------------------------------------------------- |
-| `get_config`         | 返回`{ sites, last_site_id, config_path, version }`                |
-| `save_config(sites)` | 校验 → 落盘 → 刷新托盘 → 同步无边框外观（返回归一化后的站点数组） |
+| `get_config`         | 返回`{ sites, last_site_id, ui_theme, render_mode, dev_tools, platform, config_path, version }` |
+| `save_config(sites)` | 校验 → 落盘 → 刷新托盘 → 同步无边框外观、销毁已删站点的窗口、把改了地址的窗口导航过去（返回归一化后的站点数组） |
 | `open_site(id)`      | 打开/聚焦站点窗口（省略`id` 则打开最近使用的环境）                 |
+| `new_site_window(id)` | 为同一站点再开一个窗口（共享同一份 cookie / 登录态）                |
+| `close_window`       | 彻底关闭当前站点窗口（销毁 WebView，不是隐藏到托盘）                 |
+| `close_site_windows` | 彻底关闭某站点的全部窗口，返回关闭数量                               |
+| `site_window_counts` | 各站点当前已开的窗口数                                               |
+| `toggle_frameless`   | 切换当前站点窗口的有边框 / 无边框                                    |
+| `set_ui_theme`       | 保存主题偏好（system / light / dark）                                |
+| `set_render_mode`    | 保存 Linux 渲染模式（需重启客户端生效）                              |
+| `set_dev_tools`      | 是否允许打开 DevTools（默认关闭，对新打开的窗口生效）                |
+| `open_url(url)`      | 用系统默认浏览器打开链接（仅放行 GitHub 域名，供「检查更新」用）     |
+| `show_settings`      | 打开站点设置窗口                                                      |
 | `hide_settings`      | 隐藏设置窗口                                                         |
 | `get_credential`     | 返回用户名 / 是否已存密码（密码永不下发）                            |
-| `save_credential`    | 加密保存某站点的用户名 / 密码                                        |
+| `save_credential`    | 保存某站点的用户名 / 密码                                            |
 | `clear_credential`   | 删除某站点的已存凭据                                                 |
 
 ---
@@ -206,11 +234,19 @@ dist/                        构建后的前端（作为设置窗口加载）
 
 - 保活依赖「模拟用户活动 + 让页面判定为 PWA」，具体是否生效取决于 SAS 前端实现；服务端把
   `enablesPWATimeout` 设为 `false` 时最稳妥。
-- 修改已打开环境的地址不会立刻重载窗口——只有当 scheme/host/port 变化时才重新导航，避免每次点击
-  都丢会话。
-- `src-tauri/capabilities/default.json` 向 `settings` 与 `site-*` 窗口开放了核心窗口权限，若认为
-  所加载站点不可信，请按需收紧。
-- 凭据加密使用 Windows DPAPI，绑定「当前用户 + 本机」，无法跨机器 / 跨用户迁移。
+- **改了保活开关 / 脉冲间隔，需要先彻底关闭该站点的窗口再重开才生效**：这两个值是在创建窗口时由
+  注入脚本定下的，之后改配置不会重新注入（设置页保存时会提示）。没打算做成热更新 —— 可见性伪装
+  和 `matchMedia` 伪装是脚本执行时一次性安装、无法撤销的，热更新会出现「只生效一半」的假象。
+- 窗口只有在**压根没导航过**（还停在 `about:blank`）时才会补一次导航；站点走 SSO 跳到外部 IdP 时
+  客户端不会把地址拉回站点，以免冲掉正在进行的登录。改了站点地址则会把已开的窗口导航过去。
+- `src-tauri/capabilities/default.json` 只管本地设置窗口；远程站点页（`https://`）走的是
+  `remote-sites.json` 那套最小权限。若认为所加载站点不可信，按需继续收紧后者。
+- 凭据保存：Windows 用 DPAPI（绑定「当前用户 + 本机」，无法跨机器 / 跨用户迁移）；**其它平台
+  没有 DPAPI，只做十六进制编码、等同明文**，请自行保证 `credentials.json` 不被其他用户读取。
+- DevTools 默认关闭（设置页「高级」可开，对新窗口生效）：站点窗口承载远程页面，开启意味着注入
+  脚本里的登录凭据可被读到。
+- **没有「自动下载安装」更新**：设置页的「检查更新」只比对 GitHub 最新版本并用浏览器打开下载页，
+  之后仍需手动替换程序 / 重装 deb。
 
 ---
 

@@ -337,6 +337,7 @@
       <header class="top">
         <h1 data-i18n="app.name">SAS PWA 客户端</h1>
         <span class="ver" id="version"></span>
+        <button class="btn ghost sm" id="btn-check-update" data-i18n="btn.checkUpdate">检查更新</button>
         <span class="spacer"></span>
         <select id="lang-select" class="btn ghost sm lang-select" data-i18n-title="lang.label" aria-label="Language"></select>
         <select id="theme-select" class="btn ghost sm lang-select" data-i18n-title="theme.label" aria-label="Theme"></select>
@@ -439,6 +440,18 @@
           Linux 上网页由 WebKitGTK 渲染：默认的 DMA-BUF 硬件加速路径最快，但在 NVIDIA 专有驱动、WSLg
           等环境可能花屏 / 闪烁。自动模式会在这些环境降级为共享内存路径（更稳但明显更慢）。修改后需重启客户端生效。
         </div>
+      </section>
+
+      <!-- 全局选项：不属于某一个具体站点。 -->
+      <section class="card stack" id="advanced-card">
+        <h2 data-i18n="advanced.heading">高级</h2>
+        <label class="check">
+          <input type="checkbox" id="f-devtools" />
+          <span>
+            <span class="t" data-i18n="opt.devtools.t">允许打开开发者工具（F12）</span>
+            <span class="d" data-i18n="opt.devtools.d">站点窗口跑的是远程 SAS 页面：开启后，能碰到这个窗口的人可以通过 DevTools 读到注入脚本里用于自动填充的登录凭据。建议只在排查页面问题时临时开启，且只对新打开的窗口生效。</span>
+          </span>
+        </label>
       </section>
 
       <footer class="status" id="status"></footer>

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-dev-tools"
+description = "Enables the set_dev_tools command without any pre-configured scope."
+commands.allow = ["set_dev_tools"]
+
+[[permission]]
+identifier = "deny-set-dev-tools"
+description = "Denies the set_dev_tools command without any pre-configured scope."
+commands.deny = ["set_dev_tools"]

@@ -67,6 +67,10 @@ pub struct AppConfig {
     /// DMA-BUF 硬件加速）/ compat（兼容优先，关闭 DMA-BUF 走共享内存）。
     /// 实质是 WebKitGTK 的环境变量，必须在 WebKitGTK 初始化之前定下来，所以改完要重启客户端。
     pub render_mode: String,
+    /// 是否允许在窗口里打开开发者工具（F12 / 右键检查）。**默认关闭**：
+    /// 站点窗口承载的是远程 SAS 页面，DevTools 一旦可用，能碰到这个窗口的人就能读到
+    /// 注入脚本里用于自动填充的登录凭据（见 lib.rs::render_script）。只影响此后新建的窗口。
+    pub dev_tools: bool,
 }
 
 impl Default for AppConfig {
@@ -76,6 +80,7 @@ impl Default for AppConfig {
             last_site_id: None,
             ui_theme: "system".to_string(),
             render_mode: DEFAULT_RENDER_MODE.to_string(),
+            dev_tools: false,
         }
     }
 }

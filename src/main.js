@@ -36,10 +36,12 @@ const dom = {
   del: el("btn-delete"),
   cancel: el("btn-cancel"),
   close: el("btn-close"),
+  checkUpdate: el("btn-check-update"),
   lang: el("lang-select"),
   theme: el("theme-select"),
   linuxCard: el("linux-card"),
   render: el("f-render"),
+  devtools: el("f-devtools"),
 };
 
 let state = {
@@ -119,7 +121,8 @@ function renderList() {
     const dot = document.createElement("span");
     dot.className = "dot";
     dot.title = s.keep_awake ? t("dot.on") : t("dot.off");
-    dot.style.background = s.keep_awake ? "var(--ok)" : "#59606f";
+    // 「未开启保活」用主题的中性灰变量，别写死颜色 —— 写死的话亮/暗主题都不跟着变。
+    dot.style.background = s.keep_awake ? "var(--ok)" : "var(--muted)";
 
     const meta = document.createElement("div");
     meta.className = "meta";
@@ -235,6 +238,8 @@ async function persist(openAfter) {
   }
   const sites = state.sites.slice();
   const index = state.editingIndex >= 0 ? state.editingIndex : sites.length;
+  // 保存前的那一份，用来判断「保活设置有没有被改动」（它只在建窗时生效，见下方提示）。
+  const before = state.editingIndex >= 0 ? state.sites[state.editingIndex] : null;
   if (state.editingIndex >= 0) {
     sites[index] = { ...sites[state.editingIndex], ...draft, id: sites[state.editingIndex].id || draft.id };
   } else {
@@ -257,7 +262,18 @@ async function persist(openAfter) {
     // 凭据跟随配置一起保存（密码框留空 = 不改动已保存的密码）。
     await saveCredentialIfNeeded((saved[index] || {}).id || "");
     fillForm(saved[index] || draft);
-    toast(t("toast.saved"));
+    // 保活开关与脉冲间隔是「建窗时由注入脚本定下」的，改了必须重开该站点的窗口才生效。
+    // 有窗口在跑时必须说清楚，否则用户会以为设置没生效（后端不会再注入一次）。
+    const keepChanged =
+      !!before &&
+      (before.keep_awake !== draft.keep_awake ||
+        before.pulse_seconds !== draft.pulse_seconds);
+    const running = state.windowCounts[(saved[index] || {}).id] || 0;
+    toast(
+      keepChanged && running
+        ? t("toast.savedReopenNeeded", { n: running })
+        : t("toast.saved")
+    );
     if (openAfter) {
       await openSite((saved[index] || {}).id);
     }
@@ -330,12 +346,19 @@ async function closeSiteWindows(id) {
 
 async function removeSite(i) {
   const target = state.sites[i];
-  if (!confirm(t("confirm.delete", { name: target.name || target.url }))) return;
+  // 站点名下还有窗口时说清楚：后端会连同这些窗口一起销毁。
+  // 不销毁的话它们会变成孤儿（托盘的「彻底关闭」对该站点全部置灰 = 再也关不掉）。
+  const winCount = state.windowCounts[target.id] || 0;
+  const message = winCount
+    ? t("confirm.deleteWithWindows", { name: target.name || target.url, n: winCount })
+    : t("confirm.delete", { name: target.name || target.url });
+  if (!confirm(message)) return;
   const sites = state.sites.filter((_, n) => n !== i);
   try {
     state.sites = await invoke("save_config", { sites });
     renderStatus();
     startNew();
+    void refreshWindowCounts();
     toast(t("toast.deleted"));
   } catch (e) {
     toast(t("toast.deleteFail", { e }), true);
@@ -378,14 +401,25 @@ async function loadCredential(siteId) {
   renderCredHint();
 }
 
+/**
+ * 按平台取凭据文案：只有 Windows 走 DPAPI 真加密，其它平台（credentials.rs 的非 Windows
+ * 分支）只做十六进制编码，等同明文 —— 不能对它们说「已加密」。
+ *
+ * platform 还没从 get_config 回来时（启动瞬间那次渲染）按「无 DPAPI」措辞：安全提示宁可
+ * 过度，也不能给出虚假的加密保证；load() 完成后会立刻用真实平台重刷。
+ */
+function credKey(base) {
+  return state.platform === "windows" ? base : `${base}Plain`;
+}
+
 function renderCredHint() {
   const c = state.cred;
   if (c && c.username) {
     dom.credHint.textContent = c.has_password
-      ? t("cred.savedBoth", { user: c.username })
+      ? t(credKey("cred.savedBoth"), { user: c.username })
       : t("cred.savedUser", { user: c.username });
   } else {
-    dom.credHint.textContent = t("cred.none");
+    dom.credHint.textContent = t(credKey("cred.none"));
   }
   dom.clearCred.hidden = !(c && c.username);
 }
@@ -418,7 +452,7 @@ async function saveCredentialIfNeeded(siteId) {
     });
     dom.pass.value = "";
     renderCredHint();
-    toast(t("toast.credSaved"));
+    toast(t(credKey("toast.credSaved")));
   } catch (e) {
     toast(t("toast.credFail", { e }), true);
   }
@@ -435,6 +469,10 @@ async function load() {
     state.renderMode = cfg.render_mode || "auto";
     state.platform = cfg.platform || "";
     applyTheme(state.uiTheme);
+    // 下拉框是在 load() 之前初始化的（那时 state.uiTheme 还是默认值），这里必须回写一次，
+    // 否则读出的是 dark/light、下拉框却仍显示「跟随系统」。
+    dom.theme.value = state.uiTheme;
+    dom.devtools.checked = !!cfg.dev_tools;
     renderStatus();
     renderList();
     renderForm();
@@ -540,9 +578,17 @@ function initThemeSelect() {
   dom.theme.value = state.uiTheme || "system";
   dom.theme.addEventListener("change", () => {
     const v = dom.theme.value;
+    const prev = state.uiTheme;
     state.uiTheme = v;
     applyTheme(v);
-    invoke("set_ui_theme", { theme: v }).catch(() => {});
+    // 这里不能静默吞错：曾经因为 set_ui_theme 缺 ACL 授权被拒而没有任何提示，
+    // 表现为「切主题当次看着生效、关掉窗口再开就回去了」。失败时回滚到原值。
+    invoke("set_ui_theme", { theme: v }).catch((e) => {
+      state.uiTheme = prev;
+      applyTheme(prev);
+      dom.theme.value = prev;
+      toast(t("toast.setFail", { e }), true);
+    });
   });
 }
 
@@ -564,6 +610,83 @@ function initRenderSelect() {
       toast(t("toast.saveFail", { e }), true);
     }
   });
+}
+
+/**
+ * DevTools 开关（全局，不属于某个站点）：默认关闭，只在排查页面问题时临时打开。
+ * 后端只负责落盘，**对之后新建的窗口才生效** —— 已运行的窗口改不了。
+ */
+function initDevToolsToggle() {
+  if (!dom.devtools) return;
+  dom.devtools.addEventListener("change", () => {
+    const enabled = dom.devtools.checked;
+    invoke("set_dev_tools", { enabled }).catch((e) => {
+      // 落盘失败就回滚，别留下「看着是开了、重开又回去了」的假象。
+      dom.devtools.checked = !enabled;
+      toast(t("toast.setFail", { e }), true);
+    });
+  });
+}
+
+/** 仓库地址：检查更新用（GitHub Releases API，公开仓库无需鉴权）。 */
+const REPO = "albert-huan/sas-pwa-client";
+const RELEASES_API = `https://api.github.com/repos/${REPO}/releases/latest`;
+const RELEASES_PAGE = `https://github.com/${REPO}/releases`;
+
+/**
+ * 比较版本号：只按「点分数字段」比，忽略 v 前缀与预发布后缀。
+ * @returns {number} a > b 返回正数，相等返回 0
+ */
+function compareVersion(a, b) {
+  const norm = (v) =>
+    String(v || "")
+      .replace(/^v/i, "")
+      .split(/[.\-+]/)
+      .map((n) => parseInt(n, 10) || 0);
+  const x = norm(a);
+  const y = norm(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i += 1) {
+    const d = (x[i] || 0) - (y[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+/**
+ * 检查更新：问 GitHub 的 Releases API，有新版本就用系统浏览器打开下载页。
+ *
+ * 为什么不做「自动下载安装」：Tauri 的 updater 要求更新包用私钥签名、客户端内置公钥校验，
+ * 需要额外维护一对签名密钥和 CI secret；发版频率不高，先用零配置的「检查 + 跳转下载页」。
+ */
+async function checkUpdate() {
+  if (!ENABLED) return;
+  if (dom.checkUpdate) dom.checkUpdate.disabled = true;
+  try {
+    const res = await fetch(RELEASES_API, {
+      headers: { Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const info = await res.json();
+    const latest = info.tag_name || "";
+    const current = state.version || "0";
+    if (latest && compareVersion(latest, current) > 0) {
+      if (confirm(t("update.available", { latest: latest.replace(/^v/i, ""), current }))) {
+        await invoke("open_url", { url: info.html_url || RELEASES_PAGE });
+        toast(t("update.opened"));
+      }
+    } else {
+      toast(t("update.latest", { current }));
+    }
+  } catch (e) {
+    // 私有仓库的 API 会返回 404，所以文案里一并给出「手动去 Release 页看」的出路。
+    toast(t("update.checkFail", { e }), true);
+  } finally {
+    if (dom.checkUpdate) dom.checkUpdate.disabled = false;
+  }
+}
+
+if (dom.checkUpdate) {
+  dom.checkUpdate.addEventListener("click", () => void checkUpdate());
 }
 
 dom.form.addEventListener("submit", async (ev) => {
@@ -616,6 +739,7 @@ syncWindowTitle();
 initLangSelect();
 initThemeSelect();
 initRenderSelect();
+initDevToolsToggle();
 renderStatus();
 renderList();
 renderForm();

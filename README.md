@@ -42,9 +42,14 @@ Key design decisions:
 - **Tray resident** — closing a window only hides it to the tray; the session keeps running.
 - **Frameless mode** — optional injected title bar with drag region, minimize and hide buttons.
 - **Single instance** — a second launch just focuses the running instance.
-- **DevTools** — press F12 in release builds too (`devtools` feature enabled).
-- **Encrypted credentials (DPAPI)** — optionally store username/password on Windows via DPAPI;
-  the password is never sent back to the front end.
+- **Update check** — the `Check for updates` button in the Settings window compares against the
+  latest GitHub release and opens the download page in your browser.
+- **DevTools (off by default)** — site windows load a remote SAS page, so having DevTools around
+  means the credentials injected for auto-fill are exposed. Enable it explicitly under
+  *Advanced* in the Settings window (applies to windows opened afterwards).
+- **Credential storage** — DPAPI-encrypted on Windows (bound to the current account + machine);
+  **other platforms have no DPAPI and only hex-encode the password, i.e. effectively plaintext**,
+  as the Settings window states. The password is never sent back to the front end.
 
 ---
 
@@ -115,6 +120,15 @@ alive" enabled: always report `visible` and drop `visibilitychange`). If your de
 it is obscured, so a full repaint on return is unavoidable — enabling a compositor (`picom`, `xfwm4 --composer=on`,
 or a GNOME / KDE / Wayland session) helps far more than switching render modes.
 
+**No tray icon, no way to quit**: the tray relies on a desktop StatusNotifier host, which some environments
+(WSLg, trimmed-down X11 sessions) do not provide — it simply never shows up, and since the tray's *Quit* is the
+only quit entry point you end up killing the process. Use the command-line switches instead:
+
+```bash
+sas-pwa-client --hide    # tuck every window away (same as "hide to tray" on each)
+sas-pwa-client --quit    # quit the running instance
+```
+
 ---
 
 ## Build & run
@@ -150,6 +164,11 @@ npm run tauri build    # build: dist/ frontend + msi/nsis installers
 4. Tray menu: one `Open <name>` per environment · `Site settings` · `Reload` · `Show all` · `Quit`.
 5. Tray **left click** toggles the last active window; **closing** a window hides it to the tray
    (session survives). Use `Quit` to quit for real.
+6. **Command-line switches** (handy on Linux where the tray may be unavailable; also usable in
+   scripts / shortcuts on Windows):
+   - `sas-pwa-client --hide` — tuck every window away (same as clicking "hide to tray" on each);
+   - `sas-pwa-client --quit` — quit the running instance (if none is running, it just exits).
+   When an instance is already running, the new process only forwards the action.
 
 ### Per-site options
 
@@ -181,7 +200,10 @@ identifier; the exact path is shown at the bottom of the Settings window). Examp
       "default": true
     }
   ],
-  "last_site_id": "prod"
+  "last_site_id": "prod",
+  "ui_theme": "system",
+  "render_mode": "auto",
+  "dev_tools": false
 }
 ```
 
@@ -196,7 +218,8 @@ src-tauri/
   src/lib.rs                  Shell logic: windows, tray, commands, injected script
   src/config.rs               Config model, validation, persistence
   src/credentials.rs          Encrypted credential storage (Windows DPAPI)
-  capabilities/default.json   Minimal IPC permissions for settings + site-* windows
+  capabilities/default.json   IPC permissions for the local Settings window
+                              (remote site pages use remote-sites.json)
   icons/                      App icons
 dist/                         Built frontend (loaded as the Settings window)
 ```
@@ -205,12 +228,22 @@ dist/                         Built frontend (loaded as the Settings window)
 
 | Command                | Purpose                                                                                   |
 | ---------------------- | ----------------------------------------------------------------------------------------- |
-| `get_config`         | `{ sites, last_site_id, config_path, version }`                                         |
-| `save_config(sites)` | Validate → persist → refresh tray → apply frameless changes (returns normalized sites) |
+| `get_config`         | `{ sites, last_site_id, ui_theme, render_mode, dev_tools, platform, config_path, version }` |
+| `save_config(sites)` | Validate → persist → refresh tray → sync frameless state, destroy windows of deleted sites, navigate windows whose URL changed |
 | `open_site(id)`      | Open / focus the SAS window (`id` omitted → last used environment)                     |
+| `new_site_window(id)` | Open another window for the same site (shares cookies / login state)                    |
+| `close_window`       | Really close the current site window (destroys the WebView, not hide-to-tray)           |
+| `close_site_windows` | Really close every window of a site; returns how many were closed                       |
+| `site_window_counts` | Number of open windows per site                                                          |
+| `toggle_frameless`   | Toggle frameless / decorated for the current site window                                |
+| `set_ui_theme`       | Store the theme preference (system / light / dark)                                      |
+| `set_render_mode`    | Store the Linux render mode (takes effect after a restart)                              |
+| `set_dev_tools`      | Allow opening DevTools (off by default; applies to newly opened windows)                |
+| `open_url(url)`      | Open a link in the system browser (GitHub domains only; used by "Check for updates")    |
+| `show_settings`      | Open the site-settings window                                                           |
 | `hide_settings`      | Hide the Settings window                                                                  |
 | `get_credential`     | Returns username / whether a password is stored (password is never exposed)               |
-| `save_credential`    | Encrypt and store username / password for a site                                          |
+| `save_credential`    | Store username / password for a site                                                      |
 | `clear_credential`   | Remove stored credentials for a site                                                      |
 
 ---
@@ -219,12 +252,26 @@ dist/                         Built frontend (loaded as the Settings window)
 
 - Keep-alive simulates user activity and makes the page believe it runs as a PWA; actual effect
   depends on the SAS front end. Server-side `enablesPWATimeout=false` makes it airtight.
-- Changing the URL of an already open environment does not reload it immediately — the shell only
-  navigates when scheme/host/port differ (sessions are not dropped on every click).
-- `src-tauri/capabilities/default.json` grants core window permissions to `settings` and
-  `site-*` windows; tighten it if you consider the loaded site untrusted.
-- Credential encryption uses Windows DPAPI and is bound to the current user + machine; it is not
-  portable across machines or users.
+- **Changing the keep-alive switch or pulse interval requires closing and reopening that site's
+  window**: the values are baked into the injected script when the window is created, and later
+  config saves do not re-inject (the Settings window tells you so on save). This is deliberate —
+  the visibility / `matchMedia` spoofs are installed once and cannot be undone, so a hot update
+  would give the illusion of being only half applied.
+- A window is only re-navigated when **no navigation ever happened** (still `about:blank`); when a
+  site redirects to an external IdP over SSO the shell does not pull the address back, so an
+  in-progress login is not wiped. Changing a site's URL does navigate its open windows.
+- `src-tauri/capabilities/default.json` only covers the local Settings window; remote site pages
+  (`https://`) go through the much smaller `remote-sites.json`. Tighten that one if you consider
+  the loaded site untrusted.
+- Credential storage: DPAPI on Windows (bound to the current user + machine, not portable);
+  **other platforms have no DPAPI — the password is only hex-encoded, i.e. effectively
+  plaintext** — keep `credentials.json` unreadable for other users yourself.
+- DevTools is off by default (enable under *Advanced* in the Settings window; applies to newly
+  opened windows): site windows load a remote page, so enabling it exposes the injected
+  credentials.
+- **There is no self-download/install updater**: "Check for updates" only compares against the
+  latest GitHub release and opens the download page in your browser; you still replace the binary
+  or reinstall the .deb manually.
 
 ---
 
