@@ -1,198 +1,203 @@
-# SAS PWA Client
+# SAS PWA 客户端
 
-A lightweight **Tauri v2 desktop client** for **SAS Viya / SAS Studio**.
+一个轻量的 **Tauri v2 桌面客户端**，用于 **SAS Viya / SAS Studio**。
 
-It opens your SAS site inside a dedicated WebView2 window and keeps the session alive
-(no idle timeout, no reliance on Edge/PWA installation), while letting the user configure
-the site address instead of hard-coding it into the binary.
+它把 SAS 站点放进独立的 WebView2 窗口打开，并保持会话在线（不因空闲超时掉线，也不依赖 Edge /
+PWA 安装）；同时站点地址可由用户配置，而不是写死在二进制里。
 
-> Chinese documentation: [README_ZH.md](./README_ZH.md)
-
----
-
-## What it is
-
-This is **not** a PWA. It is a native Tauri shell (WebView2 on Windows, the system's WebKitGTK on
-Linux) that loads a remote SAS Viya site. The real PWA is the remote SAS site itself; this client
-only injects scripts to fake the PWA detection signals so the SAS front end takes the standalone
-branch and stops timing out the session.
-
-Key design decisions:
-
-- **Site address is configurable, not hardcoded.** Every company has its own Viya domain, so
-  the URL is entered once in a Settings window and stored locally. Multiple environments
-  (prod / test / dev) can coexist.
-- **It stays SAS-specific.** Despite loading a remote URL, this is not a generic "open any
-  website" browser — it is tailored to SAS Studio behaviour (keep-alive, frameless bar, etc.).
+> English version: [README_EN.md](./README_EN.md)
 
 ---
 
-## Features
+## 这是什么
 
-- **Configurable site address** — type the Viya URL in the Settings window (a bare host is
-  auto-prefixed with `https://`) and press *Save and open*.
-- **Persisted configuration** — all environments are saved to `config.json`; add / edit /
-  delete any time.
-- **Default sign-in environment** — mark one environment as default and the client connects to
-  it automatically on launch (no Settings window). Without a default, the Settings window opens
-  first so you can pick one. Toggle anytime from the list; the tray menu annotates the default
-  with *(default)*.
-- **Session keep-alive** — disables WebView2 background throttling (Windows only) + spoofs PWA
-  (`display-mode` / `navigator.standalone`) + periodic `mousemove` pulse, so SAS never idles out.
-- **Tray resident** — closing a window only hides it to the tray; the session keeps running.
-- **Frameless mode** — optional injected title bar with drag region, minimize and hide buttons.
-- **Single instance** — a second launch just focuses the running instance.
-- **Update check** — the `Check for updates` button in the Settings window compares against the
-  latest GitHub release and opens the download page in your browser.
-- **DevTools (off by default)** — site windows load a remote SAS page, so having DevTools around
-  means the credentials injected for auto-fill are exposed. Enable it explicitly under
-  *Advanced* in the Settings window (applies to windows opened afterwards).
-- **Credential storage** — DPAPI-encrypted on Windows (bound to the current account + machine);
-  **other platforms have no DPAPI and only hex-encode the password, i.e. effectively plaintext**,
-  as the Settings window states. The password is never sent back to the front end.
+本项目**不是** PWA，而是一个原生 Tauri 壳（Windows 用 WebView2，Linux 用系统的 WebKitGTK）去加载
+远程 SAS Viya 站点。真正的 PWA 是远程 SAS 站点本身；本客户端只是注入脚本伪造 PWA 判定信号，让 SAS
+前端走 standalone 分支、停止对会话计时超时。
+
+关键设计：
+
+- **站点地址可配置，不写死**。不同公司的 Viya 域名不同，地址在「设置」窗口填写一次并存到本地；
+  多个环境（生产 / 测试 / 开发）可并存。
+- **定位仍是 SAS 专用客户端**。虽然是加载远程地址，但这是为 SAS Studio 行为（保活、无边框条等）
+  定制的，并非「打开任意网页」的通用浏览器。
 
 ---
 
-## Requirements
+## 功能
 
-- **Windows** with the WebView2 Runtime (Edge Chromium).
-- **Node.js 20.19+ (or 22.12+)** and npm (builds the settings page only; Vite 8 / rolldown requires it).
-- **Rust toolchain** + [Tauri v2 prerequisites](https://tauri.app/start/prerequisites/).
-- **Linux (optional)** — use the published `.deb`, see the next section.
+- **人工填写站点地址**：在「设置」窗口填写 Viya 地址（只填域名会自动补 `https://`），点
+  「保存并打开」。
+- **配置可保存**：所有环境持久化到 `config.json`，随时增删改。
+- **默认登录环境**：把某个环境设为默认后，下次启动直接连接它，不再先显示设置页；没设默认时才
+  启动进设置页供选择。列表里「设为默认 / 取消默认」可随时切换，托盘菜单给默认项标注「（默认）」。
+- **会话不掉线**：关闭 WebView2 后台节流（仅 Windows）+ PWA 伪装（`display-mode` /
+  `navigator.standalone`）+ 周期性 `mousemove` 脉冲，让 SAS 不再空闲超时。
+- **托盘常驻**：关闭窗口只是隐藏到托盘，会话继续存活。
+- **无边框模式**：可选自绘标题条（可拖动、最小化、隐藏到托盘）。
+- **单实例**：再次启动只会聚焦已运行的实例。
+- **检查更新**：设置页右上角「检查更新」比对 GitHub 上最新版本，有新版本用系统浏览器打开下载页。
+- **DevTools（默认关闭）**：站点窗口承载的是远程 SAS 页面，开着就等于把注入脚本里用于自动填充的
+  登录凭据摆出来，所以默认关闭，需要在设置页「高级」里显式开启（对新打开的窗口生效）。
+- **凭据保存**：Windows 用 DPAPI 加密（绑定当前账户 + 本机）；**其它平台没有 DPAPI，只做十六进制
+  编码、等同明文**，设置页会如实提示。密码永不下发前端。
+- **内部证书容忍 / HSTS 清理**：公司 SAS 站点多为私有 CA 自签且会轮换证书。站点窗口自动忽略服务器
+  证书错误（等价于 Edge 对该站点点「继续（不安全）」），证书更新后无需绕过即可连上；托盘菜单另提供
+  「清除站点 HSTS 缓存（下次启动生效）」，应对旧 HSTS 策略卡住换新证书的情况。
 
 ---
 
-## Linux (.deb)
+## 环境要求
 
-The published package is built on **Ubuntu 22.04** and runs on 22.04 / 24.04 / 26.04:
+- **Windows** + WebView2 Runtime（Edge Chromium）。
+- **Node.js 20.19+（或 22.12+）** 与 npm（仅用于构建设置页；Vite 8 / rolldown 需要该版本）。
+- **Rust 工具链**及 [Tauri v2 前置依赖](https://tauri.app/start/prerequisites/)。
+- **Linux（可选）**：直接用发布好的 `.deb`，见下节。
+
+---
+
+## Linux（.deb）
+
+发布包在 **Ubuntu 22.04** 上构建，兼容 22.04 / 24.04 / 26.04：
 
 ```bash
-sudo apt install "./SAS PWA Client_x.y.z_amd64.deb"   # use apt, not dpkg -i (deps + recommends)
+sudo apt install "./SAS PWA Client_x.y.z_amd64.deb"   # 用 apt，别用 dpkg -i（依赖/推荐包不会自动装）
 ```
 
-A CJK font (`fonts-noto-cjk` / `fonts-wqy-microhei` / `fonts-arphic-uming`, whichever is available) is
-installed as a *Recommends*. With `--no-install-recommends`, or on a system with no Chinese font at all,
-Chinese text renders as boxes:
+安装时会一并装上中文字体（`fonts-noto-cjk` / `fonts-wqy-microhei` / `fonts-arphic-uming` 任一，列为
+Recommends）。若安装时用了 `--no-install-recommends`、或系统里没有任何中文字体，界面中文会显示成方块：
 
 ```bash
 sudo apt install fonts-noto-cjk
 ```
 
-**Laggy / flickering UI**: WebKitGTK's accelerated compositing only goes through DMA-BUF — disabling it means
-falling back to CPU painting, which makes scrolling and animations visibly slower. So the WebKit default is
-kept, and only environments known to be broken (NVIDIA proprietary driver, WSLg) are downgraded automatically.
-The **"Linux rendering"** section at the bottom of the settings page offers three modes (restart required):
+**界面卡顿 / 闪烁**：WebKitGTK 的加速合成只走 DMA-BUF —— 关掉它就等于退回 CPU 画图，滚动和动画会明显变卡。
+所以默认保持 WebKit 自己的路径，只在已知有问题的环境（NVIDIA 专有驱动、WSLg）自动降级。设置页底部的
+**「Linux 渲染」**区块可三选一（改完需重启客户端）：
 
-| Mode | What it does | When to use |
+| 模式 | 实际动作 | 什么时候用 |
 | --- | --- | --- |
-| Automatic (default) | Disables DMA-BUF when WSL / NVIDIA is detected; on machines without GPU acceleration (no `renderD*` render node under `/dev/dri`) it also turns off accelerated compositing and composites on the CPU | Normal case |
-| Performance first | Keeps DMA-BUF and forces accelerated compositing (`WEBKIT_FORCE_COMPOSITING_MODE=1`) | Display is fine but feels slow |
-| Compatibility first | Disables DMA-BUF (`WEBKIT_DISABLE_DMABUF_RENDERER=1`) | Flicker / artifacts / blank window |
+| 自动（默认） | 检测到 WSL / NVIDIA 时关 DMA-BUF；**没有 GPU 加速**（`/dev/dri` 里没有 `renderD*` 渲染节点）时再关掉加速合成，走纯 CPU 合成 | 一般情况 |
+| 流畅优先 | 保持 DMA-BUF，并强制开启加速合成（`WEBKIT_FORCE_COMPOSITING_MODE=1`） | 界面正常但觉得不流畅 |
+| 兼容优先 | 关闭 DMA-BUF（`WEBKIT_DISABLE_DMABUF_RENDERER=1`） | 花屏 / 闪烁 / 白屏 |
 
-**Machines without GPU acceleration** can only software-render: that includes the 2D BMC chips found on server
-mainboards (the log then shows e.g. `card1:ASPEED(BMC)/ast` with **no** `renderD*` node), VMs without 3D acceleration
-and containers without `/dev/dri` mapped in. On such machines `WEBKIT_SHOW_FPS=1 sas-pwa-client` shows a live FPS box
-in the top-right corner of the page, handy for comparing the modes above; but the smoothness ceiling is the CPU. The
-`linux:` line in the start-up log tells you which case you are in (“no renderD* render node” or `GPU=llvmpipe`). The
-client already does what it can; for a smooth experience run it on a machine with a GPU (or make the X session use
-one).
+**没有 GPU 加速的机器**只能软件渲染：服务器主板 BMC 上的 ASPEED / Matrox 这类 2D 显示芯片（日志里会出现
+`card1:ASPEED(BMC)/ast` 且**没有** `renderD*` 节点）也属于这一类，另外还有没开 3D 的虚拟机、没映射 `/dev/dri`
+的容器。这类机器上 `WEBKIT_SHOW_FPS=1 sas-pwa-client` 会在页面右上角显示实时帧率，方便对照上面几种模式的
+效果；但流畅度的上限由 CPU 决定——确认方式就是看启动日志里的 `linux:` 行（出现「无 renderD* 渲染节点」或
+`GPU=llvmpipe` 即属此列），客户端侧已经做了能做的，要顺滑得换到有显卡的机器（或让 X 会话用上显卡）。
 
-You can also try the routes without touching the config (env vars take precedence):
+也可以不改配置，用环境变量临时试（环境变量优先级最高）：
 
 ```bash
-WEBKIT_FORCE_COMPOSITING_MODE=1 sas-pwa-client    # equals "Performance first"
-WEBKIT_DISABLE_DMABUF_RENDERER=1 sas-pwa-client   # equals "Compatibility first"
-WEBKIT_DISABLE_COMPOSITING_MODE=1 sas-pwa-client  # one step further: disable compositing
+WEBKIT_FORCE_COMPOSITING_MODE=1 sas-pwa-client    # 相当于「流畅优先」
+WEBKIT_DISABLE_DMABUF_RENDERER=1 sas-pwa-client   # 相当于「兼容优先」
+WEBKIT_DISABLE_COMPOSITING_MODE=1 sas-pwa-client  # 再退一步：完全关闭合成
 ```
 
-The `linux: ...` line in `~/.config/com.saspwa/debug.log` records the effective render mode and why, the session
-type (x11 / wayland), the GPU (`/sys/class/drm`, e.g. `card0:Intel`), DRM device nodes, SSH sessions, GL-related
-environment variables and the CJK font found. Paste that single line when reporting a problem — if it says there
-is no `/dev/dri`, WebKit is stuck with CPU (llvmpipe) rendering, and changing the render mode will not help much.
+启动日志 `~/.config/com.saspwa/debug.log` 里的 `linux: ...` 一行会记录：生效的渲染模式与原因、会话类型
+（x11 / wayland）、GPU（`/sys/class/drm`，如 `card0:Intel`）、显示设备节点、SSH 会话、GL 相关环境变量、
+中文字体。排查问题时直接贴这一行即可 —— 例如显示「无 /dev/dri」就说明当前只能用 CPU 软件渲染
+（llvmpipe），这时换渲染模式帮助有限，优先把显卡驱动 / 设备映射搞定。
 
-**The page re-renders from the first row after switching to another app**: on Linux the page is rendered by
-WebKitGTK. When the window is minimised/hidden (including this client's "close = hide to tray"), WebKit marks the
-page hidden and fires `visibilitychange`; the SAS front-end then often re-fetches data and repaints its table from
-row one. On Windows that class of behaviour is disabled through WebView2's
-`--disable-backgrounding-occluded-windows`; on Linux the injected script does the equivalent (with "keep session
-alive" enabled: always report `visible` and drop `visibilitychange`). If your desktop has **no compositor**
-(common on lightweight desktops such as XFCE / LXDE, or without `picom`), X11 throws away the window contents once
-it is obscured, so a full repaint on return is unavoidable — enabling a compositor (`picom`, `xfwm4 --composer=on`,
-or a GNOME / KDE / Wayland session) helps far more than switching render modes.
+**切到别的程序再切回来，页面重新刷新一遍**：Linux 下页面由 WebKitGTK 渲染，窗口被最小化 / 隐藏（含本
+客户端「关闭 = 隐藏到托盘」）时 WebKit 会把页面标成 hidden 并派发 `visibilitychange`，SAS 前端收到后
+常会重新拉数据、把表格从第一行重绘一遍。Windows 侧靠 WebView2 的 `--disable-backgrounding-occluded-windows`
+关掉了同类行为；Linux 侧由注入脚本做等价伪装（开启「保持会话不超时」时生效：恒报 `visible` 并丢弃
+`visibilitychange`）。另外若桌面**没有合成器**（很多轻量桌面默认不开，如 XFCE / LXDE / 无 `picom`），X11 在
+窗口被遮挡后会丢弃窗口内容，切回来必然整窗重绘 —— 这时开合成器（`picom`、`xfwm4 --composer=on`，
+或换 GNOME / KDE / Wayland 会话）比换渲染模式有用得多。
 
-**No tray icon, no way to quit**: the tray relies on a desktop StatusNotifier host, which some environments
-(WSLg, trimmed-down X11 sessions) do not provide — it simply never shows up, and since the tray's *Quit* is the
-only quit entry point you end up killing the process. Use the command-line switches instead:
+**托盘看不见、连退出都点不到**：托盘图标依赖桌面的 StatusNotifier 宿主，部分环境（WSLg、精简的 X11
+会话）根本没有，托盘完全不显示 —— 托盘的「退出」是唯一退出入口，于是只能去杀进程。用命令行开关即可：
 
 ```bash
-sas-pwa-client --hide    # tuck every window away (same as "hide to tray" on each)
-sas-pwa-client --quit    # quit the running instance
+sas-pwa-client --hide    # 把全部窗口收起来（等同于逐个「隐藏到托盘」）
+sas-pwa-client --quit    # 退出正在运行的实例
 ```
 
 ---
 
-## Build & run
+## 构建 / 运行
 
 ```bash
 npm install
-npm run tauri dev      # dev: vite on :1420 + Rust shell
-npm run tauri build    # build: dist/ frontend + msi/nsis installers
+npm run tauri dev      # 开发模式：vite 监听 :1420 + Rust 壳
+npm run tauri build    # 构建：dist/ 前端 + msi/nsis 安装包
 ```
 
-> **Building with plain `cargo` requires the `custom-protocol` feature.** Tauri decides
-> "production vs dev" from that feature (the Tauri CLI sets it automatically for
-> `tauri build`). If you build the release binary directly without it, the Settings window
-> loads `build.devUrl` (`http://localhost:1420`) and shows `ERR_CONNECTION_REFUSED`:
+> **直接用 cargo 构建必须启用 `custom-protocol`**：Tauri 用该 feature 区分「生产 / dev」
+> （`npm run tauri build` 由 Tauri CLI 自动加上）。若直接编译 release 而不加该 feature，
+> `cfg(dev)` 仍为真，设置窗口会去加载 `build.devUrl`（`http://localhost:1420`），
+> 出现 `ERR_CONNECTION_REFUSED`：
 >
 > ```bash
 > cd src-tauri
-> cargo build --release --features custom-protocol   # exe: target/release/sas-pwa-client.exe
+> cargo build --release --features custom-protocol   # 产物：target/release/sas-pwa-client.exe
 > ```
 >
-> `build.rs` warns when a release build is missing this feature.
+> `build.rs` 会在 release 构建缺少该 feature 时打印告警。
 
 ---
 
-## Usage
+## 使用方式
 
-1. **Launch behaviour** — no environment configured (or none set as default) → the Settings
-   window opens automatically; a default is set → that environment opens directly (change
-   anything from tray *Site settings*).
-2. Enter a **name** (e.g. `Prod`) and the **SAS site address** (`https://viya.<your-domain>/`),
-   then press **Save and open**.
-3. The site opens in its own window; a tray entry `Open <name>` appears per environment.
-4. Tray menu: one `Open <name>` per environment · `Site settings` · `Reload` · `Show all` · `Quit`.
-5. Tray **left click** toggles the last active window; **closing** a window hides it to the tray
-   (session survives). Use `Quit` to quit for real.
-6. **Command-line switches** (handy on Linux where the tray may be unavailable; also usable in
-   scripts / shortcuts on Windows):
-   - `sas-pwa-client --hide` — tuck every window away (same as clicking "hide to tray" on each);
-   - `sas-pwa-client --quit` — quit the running instance (if none is running, it just exits).
-   When an instance is already running, the new process only forwards the action.
+1. **启动行为**：没配置过环境、或没设置默认登录环境 → 自动打开「设置」窗口；已设置默认环境 →
+   直接连接该环境（要改配置从托盘「站点设置」进入）。
+2. 填写**名称**（如「生产环境」）与 **SAS 站点地址**（`https://viya.<公司域名>/`），点击
+   「保存并打开」。
+3. 站点在自己的窗口中打开，托盘菜单同步出现「打开 <名称>」。
+4. 托盘菜单：每个环境一个「打开 <名称>」·「站点设置」·「重新加载当前页面」·「显示全部窗口」·
+   「清除站点 HSTS 缓存（下次启动生效）」·「退出」。
+5. 托盘**左键**切换最近使用窗口的显隐；**关闭窗口**只会隐藏到托盘（SAS 会话不断），真正退出请用
+   托盘「退出」。
+6. **命令行开关**（Linux 上没有托盘宿主时尤其有用，Windows 也可用于脚本 / 快捷方式）：
+   - `sas-pwa-client --hide` —— 把全部窗口收起来（等同于逐个「隐藏到托盘」）；
+   - `sas-pwa-client --quit` —— 退出正在运行的实例（应用没在跑时直接退出、不建窗口）。
+   已经有一个实例在跑时，新进程只负责把动作转达过去，不会再开一个。
 
-### Per-site options
+### 站点级选项
 
-| Option                 | Meaning                                                                                                       |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `Keep session alive` | Injects the PWA spoof so SAS takes the standalone branch. Off → normal browser branch + idle timeout.        |
-| `Activity pulse`     | Seconds between synthetic`mousemove` events that reset the SAS idle timer. `0` disables, default `120`. |
-| `Frameless`          | Removes the OS title bar, shows the injected drag bar instead.                                                |
-| `Default`            | Connect automatically on next launch; only one environment can be the default.                                |
+| 选项                       | 含义                                                                               |
+| -------------------------- | ---------------------------------------------------------------------------------- |
+| 保持会话不超时（伪装 PWA） | 注入 PWA 伪装，让 SAS 走 standalone 分支；关闭后恢复普通浏览器分支，空闲超时生效。 |
+| 活动脉冲间隔（秒）         | 每隔 N 秒派发一次合成`mousemove` 重置 SAS 空闲计时器，`0` 关闭，默认 `120`。 |
+| 无边框窗口                 | 去掉系统标题栏，改用注入的自绘标题条。                                             |
+| 设为默认登录环境           | 下次启动自动连接该环境；同时只允许一个默认环境。                                   |
 
 ---
 
-## Configuration file
+### 内部证书 / HSTS 处理
 
-Stored under the app config directory — on Windows:
-`%APPDATA%\sas-pwa-client\config.json` (folder named after the program, not the bundle
-identifier; the exact path is shown at the bottom of the Settings window). Example:
+公司 SAS 站点通常用**私有 CA 自签证书**，而且会定期轮换。证书一旦变化，旧的 HSTS 策略
+（chrome://net-internals 里的 domain security policy）会强制走 HTTPS、并禁止「忽略证书错误」
+继续访问，于是每次换证书都得手动去删 HSTS。
+
+客户端从根上解决了这点：
+
+- **证书错误自动放行**：站点窗口会挂 `ServerCertificateErrorDetected`，对证书错误一律
+  `ALWAYS_ALLOW`（等价于 Edge 对该站点点「继续（不安全）」）。证书轮换后无需任何手动操作即可直接
+  连上。仅作用于你配置的 SAS 远程站点（本地设置窗口是 http，不受影响），属于内部工具可接受的安全取舍。
+- **「清除站点 HSTS 缓存」托盘项**：HSTS 存于 WebView2 的磁盘数据目录
+  （`%LOCALAPPDATA%\com.saspwa\EBWebView\Default\Network\TransportSecurity`）。本客户端是常驻进程、
+  窗口只是收进托盘，该文件被运行中进程占用，且内存里早已有旧条目——所以**当场删不可靠**。菜单项
+  因此做成「点一下 → 记个标记 → 下次启动时、在任何窗口创建之前清掉」：点击后**需重启客户端**才生效
+  （会话会断开），之后可在 `debug.log` 看到 `clear hsts pending: removed 1`。
+
+---
+
+## 配置文件
+
+保存在 Tauri 的应用配置目录，Windows 下为
+`%APPDATA%\sas-pwa-client\config.json`（目录名与程序 exe 同名，而非 bundle identifier；设置页
+底部会显示具体路径）。示例：
 
 ```json
 {
   "sites": [
     {
       "id": "prod",
-      "name": "Production",
+      "name": "生产环境",
       "url": "https://viya.example.com/",
       "keep_awake": true,
       "pulse_seconds": 120,
@@ -209,89 +214,79 @@ identifier; the exact path is shown at the bottom of the Settings window). Examp
 
 ---
 
-## Project layout
+## 目录结构
 
 ```
-src/                          Settings UI (plain HTML/JS, no framework)
+src/                          设置页 UI（原生 HTML/JS，无需框架）
 src-tauri/
-  src/main.rs                 Entry point
-  src/lib.rs                  Shell logic: windows, tray, commands, injected script
-  src/config.rs               Config model, validation, persistence
-  src/credentials.rs          Encrypted credential storage (Windows DPAPI)
-  capabilities/default.json   IPC permissions for the local Settings window
-                              (remote site pages use remote-sites.json)
-  icons/                      App icons
-dist/                         Built frontend (loaded as the Settings window)
+  src/main.rs                 程序入口
+  src/lib.rs                 壳逻辑：窗口、托盘、命令、注入脚本
+  src/config.rs              配置模型、校验、持久化
+  src/credentials.rs         加密凭据存储（Windows DPAPI）
+  src/cert.rs                内部证书容忍与 HSTS 清理（Windows WebView2）
+  capabilities/default.json  本地设置窗口的 IPC 权限（远程站点页走 remote-sites.json）
+  icons/                     应用图标
+dist/                        构建后的前端（作为设置窗口加载）
 ```
 
-### IPC commands used by the Settings page
+### 设置页使用的 IPC 命令
 
-| Command                | Purpose                                                                                   |
-| ---------------------- | ----------------------------------------------------------------------------------------- |
-| `get_config`         | `{ sites, last_site_id, ui_theme, render_mode, dev_tools, platform, config_path, version }` |
-| `save_config(sites)` | Validate → persist → refresh tray → sync frameless state, destroy windows of deleted sites, navigate windows whose URL changed |
-| `open_site(id)`      | Open / focus the SAS window (`id` omitted → last used environment)                     |
-| `new_site_window(id)` | Open another window for the same site (shares cookies / login state)                    |
-| `close_window`       | Really close the current site window (destroys the WebView, not hide-to-tray)           |
-| `close_site_windows` | Really close every window of a site; returns how many were closed                       |
-| `site_window_counts` | Number of open windows per site                                                          |
-| `toggle_frameless`   | Toggle frameless / decorated for the current site window                                |
-| `set_ui_theme`       | Store the theme preference (system / light / dark)                                      |
-| `set_render_mode`    | Store the Linux render mode (takes effect after a restart)                              |
-| `set_dev_tools`      | Allow opening DevTools (off by default; applies to newly opened windows)                |
-| `open_url(url)`      | Open a link in the system browser (GitHub domains only; used by "Check for updates")    |
-| `show_settings`      | Open the site-settings window                                                           |
-| `hide_settings`      | Hide the Settings window                                                                  |
-| `get_credential`     | Returns username / whether a password is stored (password is never exposed)               |
-| `save_credential`    | Store username / password for a site                                                      |
-| `clear_credential`   | Remove stored credentials for a site                                                      |
-
----
-
-## Notes & limitations
-
-- Keep-alive simulates user activity and makes the page believe it runs as a PWA; actual effect
-  depends on the SAS front end. Server-side `enablesPWATimeout=false` makes it airtight.
-- **Changing the keep-alive switch or pulse interval requires closing and reopening that site's
-  window**: the values are baked into the injected script when the window is created, and later
-  config saves do not re-inject (the Settings window tells you so on save). This is deliberate —
-  the visibility / `matchMedia` spoofs are installed once and cannot be undone, so a hot update
-  would give the illusion of being only half applied.
-- A window is only re-navigated when **no navigation ever happened** (still `about:blank`); when a
-  site redirects to an external IdP over SSO the shell does not pull the address back, so an
-  in-progress login is not wiped. Changing a site's URL does navigate its open windows.
-- `src-tauri/capabilities/default.json` only covers the local Settings window; remote site pages
-  (`https://`) go through the much smaller `remote-sites.json`. Tighten that one if you consider
-  the loaded site untrusted.
-- Credential storage: DPAPI on Windows (bound to the current user + machine, not portable);
-  **other platforms have no DPAPI — the password is only hex-encoded, i.e. effectively
-  plaintext** — keep `credentials.json` unreadable for other users yourself.
-- DevTools is off by default (enable under *Advanced* in the Settings window; applies to newly
-  opened windows): site windows load a remote page, so enabling it exposes the injected
-  credentials.
-- **There is no self-download/install updater**: "Check for updates" only compares against the
-  latest GitHub release and opens the download page in your browser; you still replace the binary
-  or reinstall the .deb manually.
+| 命令                   | 作用                                                                 |
+| ---------------------- | -------------------------------------------------------------------- |
+| `get_config`         | 返回`{ sites, last_site_id, ui_theme, render_mode, dev_tools, platform, config_path, version }` |
+| `save_config(sites)` | 校验 → 落盘 → 刷新托盘 → 同步无边框外观、销毁已删站点的窗口、把改了地址的窗口导航过去（返回归一化后的站点数组） |
+| `open_site(id)`      | 打开/聚焦站点窗口（省略`id` 则打开最近使用的环境）                 |
+| `new_site_window(id)` | 为同一站点再开一个窗口（共享同一份 cookie / 登录态）                |
+| `close_window`       | 彻底关闭当前站点窗口（销毁 WebView，不是隐藏到托盘）                 |
+| `close_site_windows` | 彻底关闭某站点的全部窗口，返回关闭数量                               |
+| `site_window_counts` | 各站点当前已开的窗口数                                               |
+| `toggle_frameless`   | 切换当前站点窗口的有边框 / 无边框                                    |
+| `set_ui_theme`       | 保存主题偏好（system / light / dark）                                |
+| `set_render_mode`    | 保存 Linux 渲染模式（需重启客户端生效）                              |
+| `set_dev_tools`      | 是否允许打开 DevTools（默认关闭，对新打开的窗口生效）                |
+| `open_url(url)`      | 用系统默认浏览器打开链接（仅放行 GitHub 域名，供「检查更新」用）     |
+| `show_settings`      | 打开站点设置窗口                                                      |
+| `hide_settings`      | 隐藏设置窗口                                                         |
+| `get_credential`     | 返回用户名 / 是否已存密码（密码永不下发）                            |
+| `save_credential`    | 保存某站点的用户名 / 密码                                            |
+| `clear_credential`   | 删除某站点的已存凭据                                                 |
 
 ---
 
-## Localization
+## 已知限制
 
-The Settings window supports **Chinese** and **English**. On first launch the language is
-auto-detected from the OS / browser locale; it can be switched anytime from the dropdown in the
-top-right corner, and the choice is remembered locally (stored in `localStorage`).
-
-- `跟随系统 / Follow system` — pick the language from the system/browser locale automatically.
-- `中文` / `English` — force a specific language.
-
-To add another language, extend the `dict` in `src/i18n.js` and add its code to the choice list —
-the UI and switcher adapt automatically.
+- 保活依赖「模拟用户活动 + 让页面判定为 PWA」，具体是否生效取决于 SAS 前端实现；服务端把
+  `enablesPWATimeout` 设为 `false` 时最稳妥。
+- **改了保活开关 / 脉冲间隔，需要先彻底关闭该站点的窗口再重开才生效**：这两个值是在创建窗口时由
+  注入脚本定下的，之后改配置不会重新注入（设置页保存时会提示）。没打算做成热更新 —— 可见性伪装
+  和 `matchMedia` 伪装是脚本执行时一次性安装、无法撤销的，热更新会出现「只生效一半」的假象。
+- 窗口只有在**压根没导航过**（还停在 `about:blank`）时才会补一次导航；站点走 SSO 跳到外部 IdP 时
+  客户端不会把地址拉回站点，以免冲掉正在进行的登录。改了站点地址则会把已开的窗口导航过去。
+- `src-tauri/capabilities/default.json` 只管本地设置窗口；远程站点页（`https://`）走的是
+  `remote-sites.json` 那套最小权限。若认为所加载站点不可信，按需继续收紧后者。
+- 凭据保存：Windows 用 DPAPI（绑定「当前用户 + 本机」，无法跨机器 / 跨用户迁移）；**其它平台
+  没有 DPAPI，只做十六进制编码、等同明文**，请自行保证 `credentials.json` 不被其他用户读取。
+- DevTools 默认关闭（设置页「高级」可开，对新窗口生效）：站点窗口承载远程页面，开启意味着注入
+  脚本里的登录凭据可被读到。
+- **没有「自动下载安装」更新**：设置页的「检查更新」只比对 GitHub 最新版本并用浏览器打开下载页，
+  之后仍需手动替换程序 / 重装 deb。
 
 ---
 
-## Disclaimer
+## 多语种
 
-This project is an **unofficial, non-SAS application**. The developer does not intend to impersonate
-or represent SAS Institute Inc. in any way; it was built solely to improve day-to-day convenience.
+设置页支持**中文**与**英文**。首次打开按系统 / 浏览器语言自动选择，也可随时通过右上角下拉框
+切换；选择会本地记忆（存于 `localStorage`）。
 
-Contact: albert.huan@outlook.com
+- `跟随系统` —— 按系统 / 浏览器语言自动判定。
+- `中文` / `English` —— 强制指定某种语言。
+
+如需新增语言，在 `src/i18n.js` 的 `dict` 里补一份词典并加入可选项即可，界面与切换器会自动适配。
+
+---
+
+## 免责声明
+
+本项目为**非 SAS 官方应用**，开发者无意冒充或代表 SAS 官方，仅为提升日常工作便利性而开发。
+
+联系方式：albert.huan@outlook.com

@@ -34,6 +34,10 @@ serde_json = "1"
 # 版本必须与 tauri 2.11 用的那一份一致（tauri-runtime-wry / wry 都要求 0.38），
 # 否则 controller 的类型来自不同 crate 实例、编译期就对不上。
 webview2-com = "0.38"
+# 挂 ServerCertificateErrorDetected 要取版本化接口 `ICoreWebView2_14`（该方法不在
+# `ICoreWebView2` 上），得用 `windows_core::Interface::cast`；版本必须与 webview2-com-sys
+# 内部依赖一致（0.61），否则 trait 来自另一个实例、cast 出来的类型跟 shell/事件args 对不上。
+windows-core = "0.61"
 
 [profile.release]
 panic = "abort"

@@ -10,6 +10,7 @@
 //   1) WebView2 启动参数关闭 Chromium 后台节流（BROWSER_ARGS）；
 //   2) 注入脚本伪装 display-mode / navigator.standalone，并周期性派发 mousemove。
 
+mod cert;
 mod config;
 mod credentials;
 mod hotkey;
@@ -1039,6 +1040,10 @@ fn create_site_window(
     if let Err(e) = permissions::install(&built, app.clone()) {
         log_line(app, &format!("install permission handler {label} failed: {e}"));
     }
+    // 证书错误接管：内部证书轮换后无需再手动清 HSTS（仅远程站点窗口）。
+    if let Err(e) = cert::install(&built, app.clone()) {
+        log_line(app, &format!("install cert handler {label} failed: {e}"));
+    }
     // 站点专属窗口图标（任务栏上区分站点）：放这里而不是 builder 链上 ——
     // `WebviewWindowBuilder::icon()` 返回 `Result`，会把 builder 链打断；而窗口此时还没 show，
     // 任务栏按钮尚未创建，先设好后效果完全一样。图标只影响观感，失败不打断创建。
@@ -1320,6 +1325,9 @@ fn build_tray_menu<M: Manager<tauri::Wry>>(app: &M) -> Result<tauri::menu::Menu<
         builder = builder.item(&item("reload", "重新加载当前页面")?);
         builder = builder.item(&item("showall", "显示全部窗口")?);
     }
+    // 清 HSTS：证书轮换后旧策略会禁止「忽略证书错误」，清掉后新证书才能直接连上。
+    // 当场删多半被 WebView 占着删不掉，所以真正生效在下次启动（见 `cert::clear_hsts_pending`）。
+    builder = builder.item(&item("clearhsts", "清除站点 HSTS 缓存（下次启动生效）")?);
     builder = builder.separator();
     builder = builder.item(&item("quit", "退出")?);
     builder.build().map_err(|e| e.to_string())
@@ -1829,6 +1837,15 @@ pub fn run() {
             clear_credential
         ])
         .setup(move |app| {
+            // 【必须最先做】上次点了「清除站点 HSTS 缓存」的话，在这里把 HSTS 删掉。
+            // 早于任何窗口创建（含设置窗口）才有意义：profile 一旦加载，TransportSecurity
+            // 就被占用，且 WebView 内存里已有旧条目、退出时还会写回磁盘。
+            match cert::clear_hsts_pending(app.handle()) {
+                Ok(Some(n)) => log_line(app.handle(), &format!("clear hsts pending: removed {n}")),
+                Ok(None) => {}
+                Err(e) => log_line(app.handle(), &format!("clear hsts pending failed: {e}")),
+            }
+
             // 先载入持久化配置，再初始化内存状态。
             let loaded = config::load(app.handle());
             let _ = CONFIG.set(Mutex::new(loaded.clone()));
@@ -1949,6 +1966,22 @@ pub fn run() {
                             let _ = w.set_focus();
                         }
                     }
+                }
+                "clearhsts" => {
+                    // 托盘里的「清除站点 HSTS 缓存」：当场尽力删一次，成功与否都留标记，
+                    // 由下次启动在 profile 加载前完成真正的清理（理由见 cert.rs 顶部说明）。
+                    let app2 = app.clone();
+                    std::thread::spawn(move || {
+                        match cert::clear_hsts(&app2) {
+                            Ok(n) => log_line(&app2, &format!("clear hsts now: removed {n}")),
+                            // 常见结果：文件被占用（还有窗口活着），不算错。
+                            Err(e) => log_line(&app2, &format!("clear hsts now: {e}")),
+                        }
+                        match cert::mark_clear_hsts_pending(&app2) {
+                            Ok(()) => log_line(&app2, "clear hsts: scheduled for next launch"),
+                            Err(e) => log_line(&app2, &format!("clear hsts schedule failed: {e}")),
+                        }
+                    });
                 }
                 "quit" => app.exit(0),
                 _ => {}
