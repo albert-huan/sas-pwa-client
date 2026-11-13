@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-new-window-for-current"
+description = "Enables the new_window_for_current command without any pre-configured scope."
+commands.allow = ["new_window_for_current"]
+
+[[permission]]
+identifier = "deny-new-window-for-current"
+description = "Denies the new_window_for_current command without any pre-configured scope."
+commands.deny = ["new_window_for_current"]

@@ -1,28 +1,39 @@
-//! 站点窗口 F11 → 切换无边框的**原生兜底**实现（Windows 低级键盘钩子）。
+//! 站点窗口的原生键盘兜底实现（Windows 低级键盘钩子）。
 //!
 //! 为什么不能只靠注入脚本：WebView2 默认把 F11 当作「浏览器加速键」自行处理
 //! （wry 的 `browser_accelerator_keys` 默认为 true，Tauri 没有开放这个开关），
 //! 按键不一定送到页面 DOM，注入脚本里的 keydown 监听就收不到。
-//! 钩子层抢下 F11 最可靠：只有「前台窗口是本站点窗口」时才拦截，其余一律放行。
+//! 钩子层抢下按键最可靠：只有「前台窗口是本站点窗口」时才拦截，其余一律放行。
+//!
+//! 目前接管两个键（注入脚本里都有 keydown 兜底，供 Linux 与钩子安装失败时使用）：
+//!   * F11     → 切换无边框；
+//!   * Ctrl+`  → 唤出 / 收起顶部居中的悬浮窗口栏。
 //!
 //! 注意：钩子回调运行在安装线程（主线程）的消息泵里，**必须立刻返回**，
-//! 否则系统会静默摘掉这个钩子；因此真正的切换动作投递到后台线程执行。
+//! 否则系统会静默摘掉这个钩子；因此真正的动作投递到后台线程执行。
 
 use std::sync::OnceLock;
 
-/// 触发切换的回调：参数是站点窗口的 label（`site-<id>`）。
-pub type ToggleFn = fn(&tauri::AppHandle, &str);
+/// 钩子识别到的动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    ToggleFrameless,
+    ToggleDock,
+}
+
+/// 触发动作的回调：参数是站点窗口的 label（`site-<id>`）与动作。
+pub type TriggerFn = fn(&tauri::AppHandle, &str, Action);
 
 struct State {
     app: tauri::AppHandle,
-    toggle: ToggleFn,
+    trigger: TriggerFn,
 }
 
 static STATE: OnceLock<State> = OnceLock::new();
 
-/// 安装 F11 钩子；返回是否成功（失败时由注入脚本里的 keydown 监听兜底）。
-pub fn install(app: tauri::AppHandle, toggle: ToggleFn) -> bool {
-    if STATE.set(State { app, toggle }).is_err() {
+/// 安装键盘钩子；返回是否成功（失败时由注入脚本里的 keydown 监听兜底）。
+pub fn install(app: tauri::AppHandle, trigger: TriggerFn) -> bool {
+    if STATE.set(State { app, trigger }).is_err() {
         return false; // 已经装过了
     }
     #[cfg(windows)]
@@ -65,33 +76,37 @@ fn foreground_site_label(app: &tauri::AppHandle) -> Option<String> {
 
 #[cfg(windows)]
 mod imp {
+    use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
-    use super::{foreground_site_label, state};
+    use super::{foreground_site_label, state, Action};
 
     pub const GA_ROOT: u32 = 2;
 
-    /// 按住 F11（或某些注入方式的按键）时系统会持续回放 keydown，
-    /// 只在「按下沿」触发一次：keydown 触发后置位，keyup 复位；
-    /// 万一 keyup 丢了，超过 `KEY_REPEAT_GUARD` 也算一次新的按下。
-    static HELD_AT: Mutex<Option<Instant>> = Mutex::new(None);
+    /// 按住不放时系统会持续回放 keydown。按虚拟键码分别记下按下时刻，
+    /// 只在「按下沿」触发一次；keyup 复位，万一 keyup 丢了超过 guard 也算新的一次。
+    static HELD_AT: Mutex<Option<HashMap<u32, Instant>>> = Mutex::new(None);
     const KEY_REPEAT_GUARD: Duration = Duration::from_millis(1200);
 
-    fn take_press() -> bool {
-        let mut held = HELD_AT.lock().unwrap();
+    fn take_press(vk: u32) -> bool {
+        let mut guard = HELD_AT.lock().unwrap();
+        let map = guard.get_or_insert_with(HashMap::new);
         let now = Instant::now();
-        if let Some(at) = *held {
+        if let Some(at) = map.insert(vk, now) {
             if now.duration_since(at) < KEY_REPEAT_GUARD {
                 return false;
             }
         }
-        *held = Some(now);
         true
     }
 
-    fn release_press() {
-        *HELD_AT.lock().unwrap() = None;
+    fn release_press(vk: u32) {
+        if let Ok(mut guard) = HELD_AT.lock() {
+            if let Some(map) = guard.as_mut() {
+                map.remove(&vk);
+            }
+        }
     }
 
     const WH_KEYBOARD_LL: i32 = 13;
@@ -101,6 +116,8 @@ mod imp {
     const WM_SYSKEYDOWN: usize = 0x0104;
     const WM_SYSKEYUP: usize = 0x0105;
     const VK_F11: u32 = 0x7A;
+    const VK_OEM_3: u32 = 0xC0; // ` / ~ 键
+    const VK_CONTROL: i32 = 0x11;
 
     /// https://learn.microsoft.com/windows/win32/api/winuser/ns-winuser-kbdllhookstruct
     #[repr(C)]
@@ -120,11 +137,16 @@ mod imp {
         fn CallNextHookEx(hhk: isize, code: i32, wparam: usize, lparam: isize) -> isize;
         pub(super) fn GetForegroundWindow() -> isize;
         pub(super) fn GetAncestor(hwnd: isize, flags: u32) -> isize;
+        fn GetAsyncKeyState(vkey: i32) -> i16;
     }
 
     #[link(name = "kernel32")]
     extern "system" {
         fn GetModuleHandleW(name: *const u16) -> isize;
+    }
+
+    fn ctrl_down() -> bool {
+        (unsafe { GetAsyncKeyState(VK_CONTROL) } as u16) & 0x8000 != 0
     }
 
     pub(super) unsafe fn install() -> bool {
@@ -137,21 +159,29 @@ mod imp {
     unsafe extern "system" fn hook_proc(code: i32, wparam: usize, lparam: isize) -> isize {
         if code == HC_ACTION && lparam != 0 {
             let info = unsafe { &*(lparam as *const KbdLlHookStruct) };
-            if info.vk_code == VK_F11 {
-                if wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN {
-                    // 只有前台是站点窗口时才接管；长按的重复事件照样吞掉，但不切换。
+            let action = match info.vk_code {
+                VK_F11 => Some(Action::ToggleFrameless),
+                VK_OEM_3 if ctrl_down() => Some(Action::ToggleDock),
+                _ => None,
+            };
+            if let Some(action) = action {
+                let up = wparam == WM_KEYUP || wparam == WM_SYSKEYUP;
+                let down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
+                if up {
+                    release_press(info.vk_code);
+                }
+                if down {
+                    // 只有前台是站点窗口时才接管；长按的重复事件照样吞掉，但不重复触发。
                     if let Some(s) = state() {
                         if let Some(label) = foreground_site_label(&s.app) {
-                            if take_press() {
+                            if take_press(info.vk_code) {
                                 let app = s.app.clone();
-                                let toggle = s.toggle;
-                                std::thread::spawn(move || toggle(&app, &label));
+                                let trigger = s.trigger;
+                                std::thread::spawn(move || trigger(&app, &label, action));
                             }
-                            return 1; // 吞掉按键，避免 WebView2 自己也切全屏
+                            return 1; // 吞掉按键，避免 WebView2 自己也处理
                         }
                     }
-                } else if wparam == WM_KEYUP || wparam == WM_SYSKEYUP {
-                    release_press();
                 }
             }
         }

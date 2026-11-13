@@ -3,8 +3,10 @@
 // 站点地址不再写死在代码里（不同公司域名不同）：
 //   * 首次启动弹出「设置」窗口，由用户填写 SAS 站点地址并保存；
 //   * 配置持久化到应用配置目录的 config.json，可随时增删改多个环境；
-//   * 每个环境一个独立窗口，分别开启 PWA 伪装 / 活动脉冲 / 无边框；
-//   * 托盘菜单按配置动态生成，关闭窗口默认只是隐藏到托盘（会话不断）。
+//   * 每个站点可以开多个窗口，分别开启 PWA 伪装 / 活动脉冲 / 无边框；
+//   * 站点（存盘配置）与窗口（运行实例）严格分层：设置页只管配置，站点窗口顶部居中的
+//     悬浮窗口栏 + 托盘「窗口」分区负责切换 / 新建 / 关闭，窗口清单由事件实时推送；
+//   * 托盘菜单分「窗口 / 站点」两段，关闭窗口默认只是隐藏到托盘（会话不断）。
 //
 // 保持会话在线的两个手段：
 //   1) WebView2 启动参数关闭 Chromium 后台节流（BROWSER_ARGS）；
@@ -25,11 +27,25 @@ use std::time::{Duration, Instant};
 use config::{AppConfig, Site};
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, MenuEvent};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewWindowBuilder};
 
 const WINDOW_PREFIX: &str = "site-";
 const SETTINGS_LABEL: &str = "settings";
 const TRAY_ID: &str = "main-tray";
+
+/// 注入到每个站点窗口的「悬浮窗口栏」脚本（独立文件，别再往 lib.rs 里堆 JS 字符串）。
+/// 占位符由 `render_script` 替换：当前窗口标签、界面语言。
+const DOCK_SCRIPT: &str = include_str!("../scripts/dock.js");
+
+/// 悬浮栏是否钉住。全局一份，所有站点窗口通过 windows-changed 事件保持一致；
+/// 纯 UI 状态、会话内有效，重启回到默认的「自动隐藏」，不写进 config.json。
+static DOCK_PINNED: AtomicBool = AtomicBool::new(false);
+
+/// 悬浮栏的位置 / 主题偏好（落盘在 dock.json）。首次访问时从磁盘读入，之后以内存为准。
+static DOCK_PREFS: OnceLock<Mutex<config::DockPrefs>> = OnceLock::new();
+fn dock_prefs(app: &tauri::AppHandle) -> &'static Mutex<config::DockPrefs> {
+    DOCK_PREFS.get_or_init(|| Mutex::new(config::load_dock_prefs(app)))
+}
 
 // Windows 专用 WebView2 启动参数：关闭 Chromium 的后台节流，避免窗口隐藏到托盘后
 // 长轮询中断、会话被服务端判定为「遗弃」而销毁。
@@ -160,9 +176,12 @@ const SAS_INIT_SCRIPT: &str = r#"
       bar.appendChild(title);
       // ×：隐藏到托盘（窗口不可见，但页面继续跑、保活脉冲继续）—— 与系统标题栏 × 行为一致。
       bar.appendChild(mk('×', '隐藏到托盘（保持会话）', function(){ var w = win(); if (w) w.hide(); }));
-      // ✕：彻底关闭（销毁窗口、释放 WebView）。cookie 仍在，下次打开还是登录态，
-      // 但该窗口的页面状态与保活脉冲会消失 —— 刻意与 × 分开，避免误点。
-      bar.appendChild(mk('✕', '彻底关闭窗口', function(){ if (window.__TAURI__ && window.__TAURI__.core) window.__TAURI__.core.invoke('close_window'); }));
+      // ⏻：彻底关闭（销毁窗口、释放 WebView）。cookie 仍在，下次打开还是登录态，
+      // 但该窗口的页面状态与保活脉冲会消失。旧版用「✕」和「×」两个几乎一样的叉，
+      // 用户分不清哪个保留会话、哪个销毁窗口；现在换成完全不同的字形 + 红底。
+      var power = mk('⏻', '彻底关闭窗口（释放 WebView）', function(){ if (window.__TAURI__ && window.__TAURI__.core) window.__TAURI__.core.invoke('close_window'); });
+      power.style.background = 'rgba(210,60,60,0.7)';
+      bar.appendChild(power);
       bar.appendChild(mk('–', '最小化', function(){ var w = win(); if (w) w.minimize(); }));
       bar.appendChild(mk('⚙', '设置', function(){ if (window.__TAURI__ && window.__TAURI__.core) window.__TAURI__.core.invoke('show_settings'); }));
       document.documentElement.appendChild(bar);
@@ -190,6 +209,17 @@ const SAS_INIT_SCRIPT: &str = r#"
         try { window.__TAURI__.core.invoke('toggle_frameless'); }
         catch(err){ console.error('[SAS PWA] F11', err); }
       }
+    }, true);
+    // Ctrl+` / Cmd+`：唤出或收起顶部居中的悬浮窗口栏。
+    // Windows 上原生键盘钩子会吞掉这个键、由 Rust 直接 eval __sasToggleDock()；
+    // 这里主要覆盖 Linux 以及钩子安装失败的情况（与 F11 同样的双保险）。
+    window.addEventListener('keydown', function(e){
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.code !== 'Backquote' && e.key !== '`' && e.key !== '~') return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.repeat) return;
+      try { if (window.__sasToggleDock) window.__sasToggleDock(); } catch(err){}
     }, true);
     console.log('[SAS PWA] ready');
   } catch(e){ console.error('[SAS PWA] error', e); }
@@ -291,6 +321,84 @@ fn site_window_labels(app: &tauri::AppHandle, site_id: &str) -> Vec<String> {
     labels.into_iter().map(|(_, label)| label).collect()
 }
 
+// ---------------- 窗口快照（悬浮栏 / 设置页共用） ----------------
+
+/// 一个运行中的窗口实例。与「站点」（存盘配置）严格区分。
+#[derive(serde::Serialize, Clone)]
+struct WindowInfo {
+    label: String,
+    site_id: String,
+    site_name: String,
+    title: String,
+    index: usize,
+    /// 与任务栏图标同源的站点配色（复用 site_color 的 FNV 哈希）。
+    color: String,
+    visible: bool,
+    active: bool,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct DockState {
+    pinned: bool,
+    windows: Vec<WindowInfo>,
+    prefs: config::DockPrefs,
+}
+
+/// 当前所有站点窗口的快照：按配置里的站点顺序、同一站点内按窗口序号排。
+/// 隐藏到托盘的窗口仍然在列（visible=false），否则「关了窗口但计数还在」会更让人困惑。
+fn dock_state(app: &tauri::AppHandle) -> DockState {
+    let sites = cfg_state().lock().unwrap().sites.clone();
+    let active = active_window().lock().unwrap().clone();
+    let mut order = HashMap::new();
+    for (i, s) in sites.iter().enumerate() {
+        order.insert(s.id.clone(), i);
+    }
+
+    let mut rows: Vec<(usize, usize, WindowInfo)> = Vec::new();
+    for (label, w) in app.webview_windows() {
+        // 只列站点窗口：设置窗口是配置入口，不参与窗口切换。
+        let site_id = match site_id_of_label(&label) {
+            Some(id) => id,
+            None => continue,
+        };
+        let site = sites.iter().find(|s| s.id == site_id);
+        let site_name = site
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| site_id.clone());
+        let index = window_index(&label, &site_id);
+        let title = site
+            .map(|s| window_title(s, &label))
+            .unwrap_or_else(|| format!("{site_name} ({index})"));
+        let (r, g, b) = site_color(&site_id);
+        rows.push((
+            *order.get(&site_id).unwrap_or(&usize::MAX),
+            index,
+            WindowInfo {
+                label: label.clone(),
+                site_id,
+                site_name,
+                title,
+                index,
+                color: format!("#{r:02x}{g:02x}{b:02x}"),
+                visible: w.is_visible().unwrap_or(false),
+                active: label == active,
+            },
+        ));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    DockState {
+        pinned: DOCK_PINNED.load(Ordering::SeqCst),
+        windows: rows.into_iter().map(|(_, _, v)| v).collect(),
+        prefs: dock_prefs(app).lock().unwrap().clone(),
+    }
+}
+
+/// 广播窗口清单变化：所有站点窗口的悬浮栏与设置页都订阅这一个事件，
+/// 取代旧版「设置页拿到焦点时轮询 site_window_counts」的滞后做法。
+fn emit_windows_changed(app: &tauri::AppHandle) {
+    let _ = app.emit("windows-changed", dock_state(app));
+}
+
 /// 打开站点时优先聚焦「最近用过的那个窗口」，其次取序号最小的。
 fn active_or_first_window(app: &tauri::AppHandle, site_id: &str) -> Option<String> {
     let labels = site_window_labels(app, site_id);
@@ -335,41 +443,126 @@ fn site_color(site_id: &str) -> (u8, u8, u8) {
     PALETTE[(h as usize) % PALETTE.len()]
 }
 
-/// 站点窗口图标：应用图标缩放到 32×32，底部叠一条按站点 id 取色的色带 + 右上小色块。
-/// 配合每窗口独立 AUMID，任务栏上就能一眼区分是哪个站点（拿不到应用图标时退化为纯色方块）。
-fn site_window_icon(app: &tauri::AppHandle, site: &Site) -> tauri::image::Image<'static> {
-    const SIZE: u32 = 32;
-    let (r, g, b) = site_color(&site.id);
-    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
-    // 底色：站点色（应用图标缺失或带透明时也能看清）
+/// 任务栏图标用的 5×7 点阵数字（每行低 5 位有效，高位在左）。
+const DIGIT_GLYPHS: [[u8; 7]; 10] = [
+    [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110], // 0
+    [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110], // 1
+    [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111], // 2
+    [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110], // 3
+    [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010], // 4
+    [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110], // 5
+    [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110], // 6
+    [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000], // 7
+    [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110], // 8
+    [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100], // 9
+];
+
+const ICON_SIZE: u32 = 32;
+
+/// 纯函数：合成站点窗口图标的 RGBA（32×32）。拆出来是为了不依赖 AppHandle 就能单测。
+///
+/// 层次（从底到顶）：站点色底 → 应用图标 → 底部 5px 站点色带 + 右上 6×6 色块
+/// → 第 2 个及以后的窗口，右下角再叠一枚深底白字的序号徽标（与悬浮栏 chip 的序号一致）。
+/// 第 1 个窗口不画徽标：「没有数字 = 主窗口」，单窗口的站点不会被多余的 1 打扰。
+/// 序号超过 9 的窗口统一显示 9（点阵只做了个位数，十几个窗口的场景不值得再放大字体）。
+fn render_site_icon(
+    base: Option<(&[u8], u32, u32)>,
+    color: (u8, u8, u8),
+    index: usize,
+) -> Vec<u8> {
+    let size = ICON_SIZE;
+    let (r, g, b) = color;
+    let mut rgba = vec![0u8; (size * size * 4) as usize];
     for px in rgba.chunks_exact_mut(4) {
         px.copy_from_slice(&[r, g, b, 255]);
     }
-    if let Some(base) = app.default_window_icon() {
-        let (bw, bh) = (base.width().max(1), base.height().max(1));
-        let src = base.rgba();
-        for y in 0..SIZE {
-            for x in 0..SIZE {
-                let si = (((y * bh / SIZE) * bw + (x * bw / SIZE)) * 4) as usize;
-                let di = ((y * SIZE + x) * 4) as usize;
+    if let Some((src, bw, bh)) = base {
+        let (bw, bh) = (bw.max(1), bh.max(1));
+        for y in 0..size {
+            for x in 0..size {
+                let si = (((y * bh / size) * bw + (x * bw / size)) * 4) as usize;
+                let di = ((y * size + x) * 4) as usize;
                 if si + 4 <= src.len() {
                     rgba[di..di + 4].copy_from_slice(&src[si..si + 4]);
                 }
             }
         }
     }
-    // 底部 5px 色带 + 右上 6×6 色块：前者在任务栏小图标下也认得出，后者用于区分相近的色。
-    let mut paint = |x0: u32, y0: u32, x1: u32, y1: u32| {
-        for y in y0..y1.min(SIZE) {
-            for x in x0..x1.min(SIZE) {
-                let i = ((y * SIZE + x) * 4) as usize;
-                rgba[i..i + 4].copy_from_slice(&[r, g, b, 255]);
+    let mut fill = |x0: u32, y0: u32, x1: u32, y1: u32, c: [u8; 4]| {
+        for y in y0..y1.min(size) {
+            for x in x0..x1.min(size) {
+                let i = ((y * size + x) * 4) as usize;
+                rgba[i..i + 4].copy_from_slice(&c);
             }
         }
     };
-    paint(0, SIZE - 5, SIZE, SIZE);
-    paint(SIZE - 6, 0, SIZE, 6);
-    tauri::image::Image::new_owned(rgba, SIZE, SIZE)
+    let site = [r, g, b, 255];
+    fill(0, size - 5, size, size, site);
+    fill(size - 6, 0, size, 6, site);
+
+    if index >= 2 {
+        let digit = index.min(9);
+        // 徽标 16×20（白边 1px + 深底），贴右下；数字 5×7 放大 2 倍 = 10×14，在徽标内居中。
+        let (bx0, by0, bx1, by1) = (size - 16, size - 20, size, size);
+        fill(bx0, by0, bx1, by1, [255, 255, 255, 255]);
+        fill(bx0 + 1, by0 + 1, bx1 - 1, by1 - 1, [20, 26, 40, 255]);
+        let (gx, gy) = (bx0 + 3, by0 + 3);
+        for (row, bits) in DIGIT_GLYPHS[digit].iter().enumerate() {
+            for col in 0..5u32 {
+                if bits & (1 << (4 - col)) != 0 {
+                    let (px, py) = (gx + col * 2, gy + row as u32 * 2);
+                    fill(px, py, px + 2, py + 2, [255, 255, 255, 255]);
+                }
+            }
+        }
+    }
+    rgba
+}
+
+/// 站点窗口图标：应用图标 + 站点色带，多开的第 2 个及以后窗口再叠序号徽标。
+/// 配合每窗口独立 AUMID，任务栏上能区分站点（颜色）和同站点的不同窗口（数字）。
+/// 拿不到应用图标时退化为纯色方块。
+fn site_window_icon(
+    app: &tauri::AppHandle,
+    site: &Site,
+    index: usize,
+) -> tauri::image::Image<'static> {
+    let base = app.default_window_icon();
+    let rgba = render_site_icon(
+        base.map(|i| (i.rgba(), i.width(), i.height())),
+        site_color(&site.id),
+        index,
+    );
+    tauri::image::Image::new_owned(rgba, ICON_SIZE, ICON_SIZE)
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::render_site_icon;
+
+    #[test]
+    fn first_window_has_no_badge_later_ones_differ() {
+        let color = (79, 140, 255);
+        let one = render_site_icon(None, color, 1);
+        let two = render_site_icon(None, color, 2);
+        let three = render_site_icon(None, color, 3);
+        assert_eq!(one.len(), 32 * 32 * 4);
+        assert_ne!(one, two, "第 2 个窗口必须带徽标");
+        assert_ne!(two, three, "不同序号的徽标必须不同");
+        // 徽标中心应是深底（20,26,40），而第 1 个窗口同一位置仍是站点色。
+        let px = |v: &Vec<u8>, x: u32, y: u32| {
+            let i = ((y * 32 + x) * 4) as usize;
+            [v[i], v[i + 1], v[i + 2]]
+        };
+        assert_eq!(px(&one, 17, 14), [79, 140, 255]);
+        assert_eq!(px(&two, 17, 14), [20, 26, 40]);
+    }
+
+    #[test]
+    fn large_index_is_capped_to_nine() {
+        let color = (53, 196, 107);
+        assert_eq!(render_site_icon(None, color, 9), render_site_icon(None, color, 15));
+    }
 }
 
 fn get_site(id: &str) -> Option<Site> {
@@ -778,8 +971,8 @@ fn find_cjk_font() -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
-/// 按站点配置渲染注入脚本（含该站点的登录凭据）。
-fn render_script(app: &tauri::AppHandle, site: &Site) -> String {
+/// 按站点配置渲染注入脚本（保活 / 自动登录 / 自绘标题条 + 悬浮窗口栏）。
+fn render_script(app: &tauri::AppHandle, site: &Site, label: &str) -> String {
     let pulse = if site.keep_awake {
         site.pulse_seconds.saturating_mul(1000).min(3_600_000)
     } else {
@@ -794,12 +987,22 @@ fn render_script(app: &tauri::AppHandle, site: &Site) -> String {
         (String::new(), String::new(), false)
     };
 
-    SAS_INIT_SCRIPT
+    let init = SAS_INIT_SCRIPT
         .replace("__KEEP_AWAKE__", if site.keep_awake { "true" } else { "false" })
         .replace("__PULSE_MS__", &pulse.to_string())
         .replace("__CRED_USER__", &js_string(&user))
         .replace("__CRED_PASS__", &js_string(&password))
-        .replace("__CRED_AUTO__", if auto_login { "true" } else { "false" })
+        .replace("__CRED_AUTO__", if auto_login { "true" } else { "false" });
+    // 悬浮栏需要知道「我是哪个窗口」和界面语言；语言跟设置页用同一个系统语言判定。
+    let lang = if system_lang_tag().to_ascii_lowercase().starts_with("zh") {
+        "zh"
+    } else {
+        "en"
+    };
+    let dock = DOCK_SCRIPT
+        .replace("__DOCK_LABEL__", &js_string(label))
+        .replace("__DOCK_LANG__", &js_string(lang));
+    format!("{init}\n{dock}")
 }
 
 /// 日志滚动阈值：单个 debug.log 超过它就挪成 `debug.log.1` 重新写。
@@ -882,8 +1085,13 @@ fn focus_window(app: &tauri::AppHandle, label: &str) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
-    let mut active = active_window().lock().unwrap();
-    *active = label.to_string();
+    // 设置窗口从托盘打开时也会走这里，但它不是「运行中的站点窗口」：
+    // 别让它抢走当前窗口标记，否则托盘「窗口」分区的 ● 会消失、窗口级菜单全部置灰。
+    if label.starts_with(WINDOW_PREFIX) {
+        let mut active = active_window().lock().unwrap();
+        *active = label.to_string();
+    }
+    emit_windows_changed(app);
 }
 
 /// 彻底关闭一个窗口：销毁 WebView、释放内存（与 `hide()`「收进托盘继续保活」相对）。
@@ -959,7 +1167,7 @@ fn create_site_window(
     let built =
         WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::External(target.clone()))
             .title(title)
-            .initialization_script(render_script(app, site))
+            .initialization_script(render_script(app, site, label))
             .additional_browser_args(BROWSER_ARGS)
             // 【必须关掉 Tauri 的拖放处理器】它在 Windows 上会对 WebView2 调
             // `ICoreWebView2Controller4::SetAllowExternalDrop(false)`（见 wry webview2/mod.rs），
@@ -1018,6 +1226,7 @@ fn create_site_window(
                     let _ = w.show();
                     let _ = w.set_focus();
                 }
+                emit_windows_changed(w.app_handle());
             })
             .build()
             .map_err(|e| {
@@ -1047,7 +1256,7 @@ fn create_site_window(
     // 站点专属窗口图标（任务栏上区分站点）：放这里而不是 builder 链上 ——
     // `WebviewWindowBuilder::icon()` 返回 `Result`，会把 builder 链打断；而窗口此时还没 show，
     // 任务栏按钮尚未创建，先设好后效果完全一样。图标只影响观感，失败不打断创建。
-    if let Err(e) = built.set_icon(site_window_icon(app, site)) {
+    if let Err(e) = built.set_icon(site_window_icon(app, site, window_index(label, &site.id))) {
         log_line(app, &format!("set icon {label} failed: {e}"));
     }
     // 任务栏身份：每站点一个 AUMID → 任务栏上独立分组 / 独立图标。
@@ -1119,8 +1328,11 @@ fn create_site_window(
                 let _ = w.show();
                 let _ = w.set_focus();
             }
+            emit_windows_changed(&handle);
         }
     });
+    let _ = refresh_tray(app);
+    emit_windows_changed(app);
     Ok(())
 }
 
@@ -1265,68 +1477,100 @@ fn refresh_tray(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn build_tray_menu<M: Manager<tauri::Wry>>(app: &M) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
+/// 按当前配置 + 真实窗口表重建托盘菜单。
+///
+/// 刻意分成「窗口」和「站点」两段：旧版菜单只按配置列站点，用户分不清自己点的是
+/// 一个运行中的窗口，还是一条存盘的连接配置。现在窗口段逐窗口可点（含序号与隐藏态），
+/// 站点段只负责「启动」与「设置」。
+fn build_tray_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
     let sites = cfg_state().lock().unwrap().sites.clone();
+    let windows = dock_state(app).windows;
+    let active_label = active_window().lock().unwrap().clone();
+    // 多开时标签可能带序号，站点归属走注册表（见 `site_id_of_label`）。
+    let active_id =
+        site_id_of_label(&active_label).filter(|id| sites.iter().any(|s| &s.id == id));
+    let has_active = active_id.is_some();
+
     let mut builder = MenuBuilder::new(app);
 
-    // 说明：MenuItemBuilder::build 返回 tauri::Error，统一转成字符串错误。
+    // 说明：build 返回 tauri::Error，统一转成字符串错误。
     let item = |id: &str, text: &str| {
         MenuItemBuilder::with_id(id.to_string(), text.to_string())
             .build(app)
             .map_err(|e| e.to_string())
     };
+    // Tauri 没有原生 section header，用不可点击的菜单项当分区标题。
+    let section = |id: &str, text: &str| {
+        MenuItemBuilder::with_id(id.to_string(), text.to_string())
+            .enabled(false)
+            .build(app)
+            .map_err(|e| e.to_string())
+    };
 
+    // ---- 窗口段：运行实例，逐窗口可点 ----
+    builder = builder.item(&section("section:windows", "窗口")?);
+    if windows.is_empty() {
+        builder = builder.item(&section("section:nowindows", "　（暂无打开的窗口）")?);
+    } else {
+        for w in &windows {
+            let mut text = format!("{}  {}", if w.active { "●" } else { "○" }, w.title);
+            if !w.visible {
+                text.push_str("（已隐藏）");
+            }
+            builder = builder.item(&item(&format!("win:{}", w.label), &text)?);
+        }
+    }
+    builder = builder.separator();
+    builder = builder.item(&item("showall", "显示全部窗口")?);
+    builder = builder.item(&item("reload", "重新加载当前页面")?);
+
+    let newwin_item = MenuItemBuilder::with_id("newwindow", "新建窗口（当前环境）")
+        .enabled(has_active)
+        .build(app)
+        .map_err(|e| e.to_string())?;
+    builder = builder.item(&newwin_item);
+
+    // 「彻底关闭」：销毁当前激活的站点窗口（不是隐藏到托盘）。
+    let closewin_item = MenuItemBuilder::with_id("closewindow", "彻底关闭当前窗口（当前环境）")
+        .enabled(has_active)
+        .build(app)
+        .map_err(|e| e.to_string())?;
+    builder = builder.item(&closewin_item);
+
+    // 「无边框窗口」勾选项：作用于当前激活的站点窗口，没有站点窗口时置灰。
+    let checked = active_id
+        .as_ref()
+        .and_then(|id| sites.iter().find(|s| &s.id == id))
+        .map(|s| s.frameless)
+        .unwrap_or(false);
+    let frameless_item = CheckMenuItemBuilder::with_id("frameless", "无边框窗口（当前环境）")
+        .checked(checked)
+        .enabled(has_active)
+        .build(app)
+        .map_err(|e| e.to_string())?;
+    builder = builder.item(&frameless_item);
+
+    // ---- 站点段：存盘的连接配置 ----
+    builder = builder.separator();
+    builder = builder.item(&section("section:sites", "站点")?);
     if sites.is_empty() {
         builder = builder.item(&item("settings", "打开设置…")?);
     } else {
         for s in &sites {
             // 默认登录环境在菜单里标出来，方便一眼看出启动会连哪台服务器。
             let title = if s.default {
-                format!("打开 {}（默认）", s.name)
+                format!("启动 {}（默认）", s.name)
             } else {
-                format!("打开 {}", s.name)
+                format!("启动 {}", s.name)
             };
             builder = builder.item(&item(&format!("open:{}", s.id), &title)?);
         }
-        builder = builder.separator();
         builder = builder.item(&item("settings", "站点设置")?);
-
-        // 「无边框窗口」勾选项：作用于当前激活的站点窗口，没有站点窗口时置灰。
-        let active_label = active_window().lock().unwrap().clone();
-        // 多开时标签可能带序号，站点归属走注册表（见 `site_id_of_label`）。
-        let active_id =
-            site_id_of_label(&active_label).filter(|id| sites.iter().any(|s| &s.id == id));
-        let checked = active_id
-            .as_ref()
-            .and_then(|id| sites.iter().find(|s| &s.id == id))
-            .map(|s| s.frameless)
-            .unwrap_or(false);
-        let frameless_item = CheckMenuItemBuilder::with_id("frameless", "无边框窗口（当前环境）")
-            .checked(checked)
-            .enabled(active_id.is_some())
-            .build(app)
-            .map_err(|e| e.to_string())?;
-        builder = builder.item(&frameless_item);
-
-        // 「新建窗口」：为当前激活的站点再开一个窗口（与已有窗口共享同一份登录态）。
-        let newwin_item = MenuItemBuilder::with_id("newwindow", "新建窗口（当前环境）")
-            .enabled(active_id.is_some())
-            .build(app)
-            .map_err(|e| e.to_string())?;
-        builder = builder.item(&newwin_item);
-
-        // 「彻底关闭」：销毁当前激活的站点窗口（不是隐藏到托盘）。
-        let closewin_item = MenuItemBuilder::with_id("closewindow", "彻底关闭当前窗口（当前环境）")
-            .enabled(active_id.is_some())
-            .build(app)
-            .map_err(|e| e.to_string())?;
-        builder = builder.item(&closewin_item);
-
-        builder = builder.item(&item("reload", "重新加载当前页面")?);
-        builder = builder.item(&item("showall", "显示全部窗口")?);
     }
+
     // 清 HSTS：证书轮换后旧策略会禁止「忽略证书错误」，清掉后新证书才能直接连上。
     // 当场删多半被 WebView 占着删不掉，所以真正生效在下次启动（见 `cert::clear_hsts_pending`）。
+    builder = builder.separator();
     builder = builder.item(&item("clearhsts", "清除站点 HSTS 缓存（下次启动生效）")?);
     builder = builder.separator();
     builder = builder.item(&item("quit", "退出")?);
@@ -1380,6 +1624,7 @@ fn save_config(app: tauri::AppHandle, sites: Vec<Site>) -> Result<Vec<Site>, Str
         *state = cfg.clone();
     }
     refresh_tray(&app)?;
+    emit_windows_changed(&app);
 
     // 若某个已打开窗口的无边框设置变了，立即生效。
     for site in &cfg.sites {
@@ -1590,6 +1835,101 @@ async fn site_window_counts(app: tauri::AppHandle) -> Result<HashMap<String, usi
     Ok(counts)
 }
 
+// ---------------- 悬浮窗口栏命令 ----------------
+//
+// 这些命令只操作「运行实例」，不碰站点配置；除了 get_dock_state 之外都不授权给设置页，
+// 因为设置页已经不做窗口操作了。远程站点页面只有下面这几个最小动作 + 事件监听权限。
+
+/// 读取窗口快照 + 钉住状态（悬浮栏安装时拉一次，设置页也用它做初始渲染）。
+#[tauri::command]
+async fn get_dock_state(app: tauri::AppHandle) -> DockState {
+    dock_state(&app)
+}
+
+/// 钉住 / 取消钉住悬浮栏：全局状态，广播给所有窗口保持一致。
+#[tauri::command]
+async fn set_dock_pinned(app: tauri::AppHandle, pinned: bool) -> DockState {
+    DOCK_PINNED.store(pinned, Ordering::SeqCst);
+    emit_windows_changed(&app);
+    dock_state(&app)
+}
+
+/// 保存悬浮栏的位置 / 主题偏好并广播给所有窗口。入参来自远程页面，一律先清洗再用。
+/// 磁盘写失败只记日志：偏好已在内存里生效，本次运行内仍然一致。
+#[tauri::command]
+async fn set_dock_prefs(app: tauri::AppHandle, prefs: config::DockPrefs) -> DockState {
+    let prefs = prefs.sanitize();
+    let changed = {
+        let mut g = dock_prefs(&app).lock().unwrap();
+        let changed = *g != prefs;
+        *g = prefs.clone();
+        changed
+    };
+    if changed {
+        if let Err(e) = config::save_dock_prefs(&app, &prefs) {
+            log_line(&app, &format!("save dock prefs failed: {e}"));
+        }
+        emit_windows_changed(&app);
+    }
+    dock_state(&app)
+}
+
+/// 转到指定窗口（显示 + 取消最小化 + 置前）。
+#[tauri::command]
+async fn focus_site_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    if !label.starts_with(WINDOW_PREFIX) {
+        return Err("只能切换到 SAS 站点窗口".to_string());
+    }
+    focus_window(&app, &label);
+    Ok(())
+}
+
+/// 隐藏指定窗口到托盘（保留页面与会话，不销毁 WebView）。
+#[tauri::command]
+async fn hide_site_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    if !label.starts_with(WINDOW_PREFIX) {
+        return Err("只能隐藏 SAS 站点窗口".to_string());
+    }
+    let w = app
+        .get_webview_window(&label)
+        .ok_or_else(|| "窗口已不存在".to_string())?;
+    w.hide().map_err(|e| e.to_string())?;
+    let _ = refresh_tray(&app);
+    emit_windows_changed(&app);
+    Ok(())
+}
+
+/// 彻底关闭指定窗口（销毁 WebView、释放内存）。
+#[tauri::command]
+async fn close_site_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    if !label.starts_with(WINDOW_PREFIX) {
+        return Err("只能关闭 SAS 站点窗口".to_string());
+    }
+    destroy_site_window(&app, &label);
+    Ok(())
+}
+
+/// 重新加载指定窗口的页面。
+#[tauri::command]
+async fn reload_site_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    if !label.starts_with(WINDOW_PREFIX) {
+        return Err("只能重载 SAS 站点窗口".to_string());
+    }
+    let w = app
+        .get_webview_window(&label)
+        .ok_or_else(|| "窗口已不存在".to_string())?;
+    w.eval("location.reload();").map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 「+ 新建当前站点窗口」：站点 id 从调用窗口推断，前端不必（也不该）传 id。
+#[tauri::command]
+async fn new_window_for_current(app: tauri::AppHandle, window: tauri::Window) -> Result<(), String> {
+    let id = site_id_of_label(window.label())
+        .ok_or_else(|| "只有 SAS 站点窗口才能新建窗口".to_string())?;
+    create_new_site_window(&app, &id)
+}
+
 /// 设置页用：关闭自身（实际是隐藏，保留状态）。
 #[tauri::command]
 fn hide_settings(app: tauri::AppHandle) {
@@ -1652,10 +1992,22 @@ fn toggle_frameless_for(app: &tauri::AppHandle, window_label: &str) -> Result<bo
     Ok(!current)
 }
 
-/// 原生 F11 钩子的落地动作（钩子回调只负责投递，实际切换在这里执行）。
-fn hotkey_toggle(app: &tauri::AppHandle, window_label: &str) {
-    if let Err(e) = toggle_frameless_for(app, window_label) {
-        eprintln!("[SAS PWA 客户端] F11 切换无边框失败：{e}");
+/// 原生键盘钩子的落地动作（钩子回调只负责投递，实际动作在这里执行）。
+fn hotkey_trigger(app: &tauri::AppHandle, window_label: &str, action: hotkey::Action) {
+    // 写进 debug.log 而不是 eprintln：发行版没有控制台，F11 没反应时这是唯一的线索。
+    log_line(app, &format!("hotkey {action:?} on {window_label}"));
+    match action {
+        hotkey::Action::ToggleFrameless => {
+            if let Err(e) = toggle_frameless_for(app, window_label) {
+                log_line(app, &format!("F11 toggle frameless failed: {e}"));
+            }
+        }
+        hotkey::Action::ToggleDock => {
+            // 钩子吞掉了按键，页面收不到 keydown：直接让该窗口的悬浮栏切换显隐。
+            if let Some(w) = app.get_webview_window(window_label) {
+                let _ = w.eval("if(window.__sasToggleDock)window.__sasToggleDock();");
+            }
+        }
     }
 }
 
@@ -1826,6 +2178,14 @@ pub fn run() {
             close_site_windows,
             site_window_counts,
             hide_settings,
+            get_dock_state,
+            set_dock_pinned,
+            set_dock_prefs,
+            focus_site_window,
+            hide_site_window,
+            close_site_window,
+            reload_site_window,
+            new_window_for_current,
             set_ui_theme,
             set_render_mode,
             set_dev_tools,
@@ -1876,8 +2236,8 @@ pub fn run() {
             // 站点窗口的 F11：优先交给原生低级键盘钩子（WebView2 会把 F11 当浏览器
             // 加速键吃掉，页面里的 keydown 不一定收得到）。装不上时工具栏里的注入脚本兜底。
             // 必须在这里（窗口创建之前）安装：钩子回调在主线程的消息泵里执行。
-            let hooked = hotkey::install(app.handle().clone(), hotkey_toggle);
-            log_line(app.handle(), &format!("F11 native hook: {hooked}"));
+            let hooked = hotkey::install(app.handle().clone(), hotkey_trigger);
+            log_line(app.handle(), &format!("F11 / Ctrl+` native hook: {hooked}"));
 
             // 启动策略（默认环境在设置页里指定）：
             //   配了「默认登录环境」→ 直接连接该环境；
@@ -1903,6 +2263,13 @@ pub fn run() {
         })
         .on_menu_event(|app, event: MenuEvent| {
             let id = event.id().as_ref().to_string();
+            if let Some(label) = id.strip_prefix("win:") {
+                // 托盘「窗口」分区：转到指定的运行实例，而不是按站点随便挑一个。
+                let app = app.clone();
+                let label = label.to_string();
+                std::thread::spawn(move || focus_window(&app, &label));
+                return;
+            }
             if let Some(site_id) = id.strip_prefix("open:") {
                 // 与 open_site 命令同理：创建窗口必须在主线程之外发起，避免死锁。
                 let app = app.clone();
@@ -1966,6 +2333,7 @@ pub fn run() {
                             let _ = w.set_focus();
                         }
                     }
+                    emit_windows_changed(&app);
                 }
                 "clearhsts" => {
                     // 托盘里的「清除站点 HSTS 缓存」：当场尽力删一次，成功与否都留标记，
@@ -1995,6 +2363,12 @@ pub fn run() {
                     // 自绘标题条的 ✕、托盘「彻底关闭当前窗口（当前环境）」、设置页站点行的「关闭窗口」。
                     api.prevent_close();
                     let _ = window.hide();
+                    // 窗口回调里别直接查窗口表（可能正握着管理器锁），丢后台线程广播。
+                    let app = window.app_handle().clone();
+                    std::thread::spawn(move || {
+                        let _ = refresh_tray(&app);
+                        emit_windows_changed(&app);
+                    });
                 }
                 // 窗口真被销毁（退出前 / 主动 destroy）时清掉注册表，别留着孤儿标签。
                 tauri::WindowEvent::Destroyed => {
@@ -2018,6 +2392,7 @@ pub fn run() {
                         }
                         drop(active);
                         let _ = refresh_tray(&app);
+                        emit_windows_changed(&app);
                     });
                 }
                 // 记住最后一个获得焦点的站点窗口：托盘左键显隐、菜单「无边框窗口」都以它为准。
@@ -2038,6 +2413,7 @@ pub fn run() {
                             let app = window.app_handle().clone();
                             std::thread::spawn(move || {
                                 let _ = refresh_tray(&app);
+                                emit_windows_changed(&app);
                             });
                         }
                     }
@@ -2074,6 +2450,11 @@ fn build_tray_at_startup(app: &tauri::AppHandle) -> Result<(), String> {
                     if let Some(w) = app.get_webview_window(&label) {
                         let _ = w.hide();
                     }
+                    let handle = app.clone();
+                    std::thread::spawn(move || {
+                        let _ = refresh_tray(&handle);
+                        emit_windows_changed(&handle);
+                    });
                 } else if !label.is_empty() {
                     focus_window(app, &label);
                 } else {

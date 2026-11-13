@@ -183,6 +183,12 @@
           "markdownDescription": "Enables the clear_credential command without any pre-configured scope."
         },
         {
+          "description": "Enables the close_site_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-close-site-window",
+          "markdownDescription": "Enables the close_site_window command without any pre-configured scope."
+        },
+        {
           "description": "Enables the close_site_windows command without any pre-configured scope.",
           "type": "string",
           "const": "allow-close-site-windows",
@@ -193,6 +199,12 @@
           "type": "string",
           "const": "allow-close-window",
           "markdownDescription": "Enables the close_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the focus_site_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-focus-site-window",
+          "markdownDescription": "Enables the focus_site_window command without any pre-configured scope."
         },
         {
           "description": "Enables the get_config command without any pre-configured scope.",
@@ -207,16 +219,34 @@
           "markdownDescription": "Enables the get_credential command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_dock_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-dock-state",
+          "markdownDescription": "Enables the get_dock_state command without any pre-configured scope."
+        },
+        {
           "description": "Enables the hide_settings command without any pre-configured scope.",
           "type": "string",
           "const": "allow-hide-settings",
           "markdownDescription": "Enables the hide_settings command without any pre-configured scope."
         },
         {
+          "description": "Enables the hide_site_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-hide-site-window",
+          "markdownDescription": "Enables the hide_site_window command without any pre-configured scope."
+        },
+        {
           "description": "Enables the new_site_window command without any pre-configured scope.",
           "type": "string",
           "const": "allow-new-site-window",
           "markdownDescription": "Enables the new_site_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the new_window_for_current command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-new-window-for-current",
+          "markdownDescription": "Enables the new_window_for_current command without any pre-configured scope."
         },
         {
           "description": "Enables the open_site command without any pre-configured scope.",
@@ -229,6 +259,12 @@
           "type": "string",
           "const": "allow-open-url",
           "markdownDescription": "Enables the open_url command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reload_site_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-reload-site-window",
+          "markdownDescription": "Enables the reload_site_window command without any pre-configured scope."
         },
         {
           "description": "Enables the save_config command without any pre-configured scope.",
@@ -247,6 +283,18 @@
           "type": "string",
           "const": "allow-set-dev-tools",
           "markdownDescription": "Enables the set_dev_tools command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_dock_pinned command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-dock-pinned",
+          "markdownDescription": "Enables the set_dock_pinned command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_dock_prefs command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-dock-prefs",
+          "markdownDescription": "Enables the set_dock_prefs command without any pre-configured scope."
         },
         {
           "description": "Enables the set_render_mode command without any pre-configured scope.",
@@ -285,6 +333,12 @@
           "markdownDescription": "Denies the clear_credential command without any pre-configured scope."
         },
         {
+          "description": "Denies the close_site_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-close-site-window",
+          "markdownDescription": "Denies the close_site_window command without any pre-configured scope."
+        },
+        {
           "description": "Denies the close_site_windows command without any pre-configured scope.",
           "type": "string",
           "const": "deny-close-site-windows",
@@ -295,6 +349,12 @@
           "type": "string",
           "const": "deny-close-window",
           "markdownDescription": "Denies the close_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the focus_site_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-focus-site-window",
+          "markdownDescription": "Denies the focus_site_window command without any pre-configured scope."
         },
         {
           "description": "Denies the get_config command without any pre-configured scope.",
@@ -309,16 +369,34 @@
           "markdownDescription": "Denies the get_credential command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_dock_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-dock-state",
+          "markdownDescription": "Denies the get_dock_state command without any pre-configured scope."
+        },
+        {
           "description": "Denies the hide_settings command without any pre-configured scope.",
           "type": "string",
           "const": "deny-hide-settings",
           "markdownDescription": "Denies the hide_settings command without any pre-configured scope."
         },
         {
+          "description": "Denies the hide_site_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-hide-site-window",
+          "markdownDescription": "Denies the hide_site_window command without any pre-configured scope."
+        },
+        {
           "description": "Denies the new_site_window command without any pre-configured scope.",
           "type": "string",
           "const": "deny-new-site-window",
           "markdownDescription": "Denies the new_site_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the new_window_for_current command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-new-window-for-current",
+          "markdownDescription": "Denies the new_window_for_current command without any pre-configured scope."
         },
         {
           "description": "Denies the open_site command without any pre-configured scope.",
@@ -331,6 +409,12 @@
           "type": "string",
           "const": "deny-open-url",
           "markdownDescription": "Denies the open_url command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reload_site_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-reload-site-window",
+          "markdownDescription": "Denies the reload_site_window command without any pre-configured scope."
         },
         {
           "description": "Denies the save_config command without any pre-configured scope.",
@@ -349,6 +433,18 @@
           "type": "string",
           "const": "deny-set-dev-tools",
           "markdownDescription": "Denies the set_dev_tools command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_dock_pinned command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-dock-pinned",
+          "markdownDescription": "Denies the set_dock_pinned command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_dock_prefs command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-dock-prefs",
+          "markdownDescription": "Denies the set_dock_prefs command without any pre-configured scope."
         },
         {
           "description": "Denies the set_render_mode command without any pre-configured scope.",

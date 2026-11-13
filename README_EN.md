@@ -140,14 +140,20 @@ sas-pwa-client --quit    # quit the running instance
 
 ```bash
 npm install
-npm run tauri dev      # dev: vite on :1420 + Rust shell
+npm run tauri dev      # dev: vite on :5173 + Rust shell
 npm run tauri build    # build: dist/ frontend + msi/nsis installers
 ```
+
+> **`EACCES: permission denied` when dev binds its port**: Hyper-V / WSL on Windows
+> dynamically reserves port ranges (often `1348–1447`, which includes Tauri's default `1420`).
+> The port is not actually in use. Check with
+> `netsh interface ipv4 show excludedportrange protocol=tcp`, then change **both**
+> `server.port` in `vite.config.js` and `devUrl` in `tauri.conf.json` to a port outside the range.
 
 > **Building with plain `cargo` requires the `custom-protocol` feature.** Tauri decides
 > "production vs dev" from that feature (the Tauri CLI sets it automatically for
 > `tauri build`). If you build the release binary directly without it, the Settings window
-> loads `build.devUrl` (`http://localhost:1420`) and shows `ERR_CONNECTION_REFUSED`:
+> loads `build.devUrl` (`http://localhost:5173`) and shows `ERR_CONNECTION_REFUSED`:
 >
 > ```bash
 > cd src-tauri

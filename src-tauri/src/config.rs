@@ -20,11 +20,14 @@ const APP_FOLDER_NAME: &str = env!("CARGO_PKG_NAME");
 // 用内容判断是不是本应用的 config.json（见 `looks_like_our_config`），
 // 命中就搬过来，避免老用户丢配置。
 
-/// 单个 SAS 环境配置：一个环境对应一个独立窗口（不同公司域名不同，可配置多个环境）。
+/// 单个 SAS 站点的**连接配置**（存盘数据，不是运行实例）。
+///
+/// 一个站点可以同时开多个窗口：窗口标签是 `site-<id>`、`site-<id>-2`…，
+/// 由 `WINDOW_SITES` 注册表维护归属；本结构体里没有任何窗口状态。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Site {
-    /// 窗口标识，同时用于 tray 菜单与内存查找。
+    /// 站点标识：窗口标签的前缀、tray 菜单 id、凭据键与任务栏 AUMID 都用它。
     pub id: String,
     /// 展示名称，用作窗口标题与 tray 菜单文案。
     pub name: String,
@@ -83,6 +86,102 @@ impl Default for AppConfig {
             dev_tools: false,
         }
     }
+}
+
+/// 悬浮窗口栏的外观与位置偏好，单独存 dock.json（不放进 config.json：它不属于站点配置，
+/// 且远程站点页面有权写它，隔离开可以保证页面最多只能改「样子」，碰不到站点地址）。
+///
+/// 位置用「可移动范围内的比例」表示：`cx`/`cy` ∈ [0,1]，0 = 贴左 / 贴上，1 = 贴右 / 贴下。
+/// 比例而不是像素，是因为各窗口大小不同，同一份偏好要能在所有窗口里落在相对一致的位置。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DockPrefs {
+    pub cx: f64,
+    pub cy: f64,
+    /// 贴靠的边：""（悬浮在中间）/ top / bottom / left / right。
+    pub edge: String,
+    /// 主题 id：内置 midnight / graphite / forest / dusk / paper，或 custom（用下面两个颜色）。
+    pub theme: String,
+    /// 自定义主题的底色与强调色（#rrggbb）。内置主题由前端按 theme 查表，这两个值只在 custom 时生效。
+    pub bg: String,
+    pub accent: String,
+    /// 背景不透明度 0.35 ~ 1.0（只影响底色，文字与图标始终不透明）。
+    pub opacity: f64,
+    /// 贴边时收起后完全隐藏，鼠标靠近原位置再显示。
+    pub edge_hide: bool,
+}
+
+impl Default for DockPrefs {
+    fn default() -> Self {
+        Self {
+            cx: 0.5,
+            cy: 0.0,
+            // 默认不吸边：收起后是一枚始终可见的小把手。吸边（并在收起时完全隐藏）只发生在
+            // 用户主动把胶囊拖到屏幕边缘之后；默认就隐藏的话，新装的用户会以为胶囊消失了。
+            edge: String::new(),
+            theme: "midnight".to_string(),
+            bg: "#1b2233".to_string(),
+            accent: "#7aa8ff".to_string(),
+            opacity: 0.94,
+            edge_hide: true,
+        }
+    }
+}
+
+const DOCK_THEMES: [&str; 6] = ["midnight", "graphite", "forest", "dusk", "paper", "custom"];
+const DOCK_EDGES: [&str; 5] = ["", "top", "bottom", "left", "right"];
+
+fn is_hex_color(s: &str) -> bool {
+    s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
+impl DockPrefs {
+    /// 清洗不可信输入：这份偏好既来自磁盘（可能被手改），也来自远程页面里的 IPC 调用。
+    /// 非法值一律回落到默认值，数值夹到合法范围；颜色只放行 #rrggbb，避免被拿去拼样式。
+    pub fn sanitize(mut self) -> Self {
+        let d = DockPrefs::default();
+        let unit = |v: f64, fallback: f64| if v.is_finite() { v.clamp(0.0, 1.0) } else { fallback };
+        self.cx = unit(self.cx, d.cx);
+        self.cy = unit(self.cy, d.cy);
+        if !DOCK_EDGES.contains(&self.edge.as_str()) {
+            self.edge = d.edge.clone();
+        }
+        if !DOCK_THEMES.contains(&self.theme.as_str()) {
+            self.theme = d.theme.clone();
+        }
+        if !is_hex_color(&self.bg) {
+            self.bg = d.bg.clone();
+        }
+        if !is_hex_color(&self.accent) {
+            self.accent = d.accent.clone();
+        }
+        self.opacity = if self.opacity.is_finite() {
+            self.opacity.clamp(0.35, 1.0)
+        } else {
+            d.opacity
+        };
+        self
+    }
+}
+
+const DOCK_PREFS_FILE: &str = "dock.json";
+
+/// 读取悬浮栏偏好；文件不存在或损坏时用默认值（外观偏好不值得阻断启动）。
+pub fn load_dock_prefs(app: &AppHandle) -> DockPrefs {
+    let Ok(dir) = app_dir(app) else {
+        return DockPrefs::default();
+    };
+    fs::read_to_string(dir.join(DOCK_PREFS_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<DockPrefs>(&t).ok())
+        .unwrap_or_default()
+        .sanitize()
+}
+
+pub fn save_dock_prefs(app: &AppHandle, prefs: &DockPrefs) -> Result<(), String> {
+    let path = app_dir(app)?.join(DOCK_PREFS_FILE);
+    let text = serde_json::to_string_pretty(prefs).map_err(|e| format!("序列化悬浮栏偏好失败：{e}"))?;
+    fs::write(&path, text).map_err(|e| format!("写入 {path:?} 失败：{e}"))
 }
 
 /// 渲染模式的合法取值与默认值。
@@ -317,4 +416,39 @@ fn unique_id(base: &str, used: &mut Vec<String>) -> String {
     }
     used.push(candidate.clone());
     candidate
+}
+
+#[cfg(test)]
+mod dock_prefs_tests {
+    use super::DockPrefs;
+
+    #[test]
+    fn sanitize_clamps_and_rejects_bad_values() {
+        let p = DockPrefs {
+            cx: 9.0,
+            cy: f64::NAN,
+            edge: "diagonal".into(),
+            theme: "<script>".into(),
+            bg: "red; background:url(x)".into(),
+            accent: "#12345".into(),
+            opacity: 0.0,
+            edge_hide: true,
+        }
+        .sanitize();
+        let d = DockPrefs::default();
+        assert_eq!(p.cx, 1.0);
+        assert_eq!(p.cy, d.cy);
+        assert_eq!(p.edge, d.edge);
+        assert_eq!(p.theme, d.theme);
+        assert_eq!(p.bg, d.bg);
+        assert_eq!(p.accent, d.accent);
+        assert_eq!(p.opacity, 0.35);
+    }
+
+    #[test]
+    fn sanitize_keeps_valid_values() {
+        let p = DockPrefs { cx: 0.25, edge: "left".into(), theme: "custom".into(),
+            bg: "#AbCdEf".into(), accent: "#00ff00".into(), opacity: 0.6, ..DockPrefs::default() };
+        assert_eq!(p.clone().sanitize(), p);
+    }
 }

@@ -203,6 +203,24 @@
         background: rgba(79, 140, 255, 0.14);
         border: 1px solid rgba(79, 140, 255, 0.45);
       }
+      /* 运行指示：与「默认」徽标刻意做成不同形态（绿点 + 灰字、无蓝色胶囊），
+         让「存盘的配置属性」和「运行时的窗口数量」一眼可分。 */
+      .site .running {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        margin-left: 8px;
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--muted);
+        vertical-align: 1px;
+      }
+      .site .running::before {
+        content: "";
+        width: 6px; height: 6px; border-radius: 50%;
+        background: var(--ok);
+        box-shadow: 0 0 0 3px rgba(53, 196, 107, 0.14);
+      }
       .hint {
         margin-top: 12px;
         padding-top: 10px;
@@ -210,6 +228,7 @@
         color: var(--muted);
         font-size: 12px;
       }
+      .hint.quiet { border-top: 0; padding-top: 2px; }
       /* 表单中间的提示（如凭据状态）：不需要虚线分隔，只要一点行距。 */
       .hint.inline {
         margin: 0 0 14px;
@@ -356,6 +375,7 @@
           </div>
           <div class="list" id="site-list"></div>
           <div class="hint" id="default-hint"></div>
+          <div class="hint quiet" data-i18n="sites.hint"></div>
         </section>
 
         <section class="card">

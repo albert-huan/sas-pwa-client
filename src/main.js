@@ -1,4 +1,6 @@
-// SAS PWA 客户端设置页：维护 SAS 站点配置（增删改）并通过 Tauri 命令持久化 / 打开窗口。
+// SAS PWA 客户端设置页：只维护 SAS 站点的连接配置（增删改）并持久化。
+// 运行中的窗口不属于本页：切换 / 新建 / 关闭走站点窗口顶部居中的悬浮栏与托盘「窗口」分区，
+// 本页只订阅 windows-changed 事件显示「运行中 N」。
 // 依赖 withGlobalTauri=true 注入的全局 __TAURI__，无需 npm 依赖。
 // 文案多语种：见 ./i18n.js（t / applyI18n / getLang / setLang …）。
 
@@ -55,8 +57,10 @@ let state = {
   // 渲染模式与平台：Linux 才有这个设置（改的是 WebKitGTK 的渲染路径，重启后生效）。
   renderMode: "auto",
   platform: "",
-  // 各站点已开的窗口数（后端查，详见 refreshWindowCounts）：无窗口则没有该键。
-  windowCounts: {},
+  // 运行中的窗口（由后端 windows-changed 事件推送）：窗口是运行实例、不落盘，
+  // 设置页只拿它算「运行中 N」，不在这里做任何窗口操作。
+  windows: [],
+  dockPinned: false,
 };
 
 function invoke(cmd, args) {
@@ -135,26 +139,25 @@ function renderList() {
       badge.textContent = t("badge.default");
       name.appendChild(badge);
     }
-    const winCount = state.windowCounts[s.id] || 0;
-    if (winCount > 0) {
-      const badge = document.createElement("span");
-      badge.className = "badge";
-      badge.textContent = t("list.windowCount", { n: winCount });
-      name.appendChild(badge);
+    // 运行指示：与「默认」徽标视觉分级，强调这是运行时状态而不是站点属性。
+    const running = runningCount(s.id);
+    if (running > 0) {
+      const indicator = document.createElement("span");
+      indicator.className = "running";
+      indicator.title = t("list.runningTip", { n: running });
+      indicator.textContent = t("list.running", { n: running });
+      name.appendChild(indicator);
     }
     const url = document.createElement("div");
     url.className = "url";
     url.textContent = s.url;
     meta.append(name, url);
 
+    // 这一行只放配置动作；「新建窗口 / 关闭窗口」已移交站点窗口顶部居中的悬浮栏。
     const acts = document.createElement("div");
     acts.className = "acts";
     acts.append(
-      mkBtn(t("list.open"), () => openSite(s.id), "primary sm"),
-      // 「新窗口」：为同一站点再开一个窗口，与已有窗口共享同一份登录态（同一账号多开）。
-      mkBtn(t("list.newWindow"), () => openSiteNewWindow(s.id), "sm"),
-      // 「关闭窗口」：彻底关闭该站点的全部窗口（销毁 WebView）。没有窗口时置灰。
-      mkBtn(t("list.closeWindows"), () => closeSiteWindows(s.id), "sm", winCount === 0),
+      mkBtn(t("list.open"), () => openSite(s.id), "primary sm", false, t("list.launchTip")),
       mkBtn(t("list.edit"), () => startEdit(i), "sm"),
       mkBtn(s.default ? t("list.unsetDefault") : t("list.setDefault"), () => setDefault(i, !s.default), "sm"),
       mkBtn(t("list.delete"), () => removeSite(i), "sm danger")
@@ -165,14 +168,20 @@ function renderList() {
   });
 }
 
-function mkBtn(text, onClick, cls = "", disabled = false) {
+function mkBtn(text, onClick, cls = "", disabled = false, title = "") {
   const b = document.createElement("button");
   b.className = `btn ${cls}`.trim();
   b.type = "button";
   b.textContent = text;
   b.disabled = !!disabled;
+  if (title) b.title = title;
   b.addEventListener("click", onClick);
   return b;
+}
+
+/** 某站点运行中的窗口数（含已隐藏到托盘的窗口）。 */
+function runningCount(siteId) {
+  return state.windows.filter((w) => w.site_id === siteId).length;
 }
 
 function renderForm() {
@@ -268,7 +277,7 @@ async function persist(openAfter) {
       !!before &&
       (before.keep_awake !== draft.keep_awake ||
         before.pulse_seconds !== draft.pulse_seconds);
-    const running = state.windowCounts[(saved[index] || {}).id] || 0;
+    const running = runningCount((saved[index] || {}).id || "");
     toast(
       keepChanged && running
         ? t("toast.savedReopenNeeded", { n: running })
@@ -282,6 +291,7 @@ async function persist(openAfter) {
   }
 }
 
+/** 启动站点：已有窗口则转到，一个都没有才新建。窗口清单由事件推送，不再轮询。 */
 async function openSite(id) {
   if (!id) {
     toast(t("toast.fillUrl"), true);
@@ -290,65 +300,45 @@ async function openSite(id) {
   toast(t("toast.opening"));
   try {
     await invoke("open_site", { id });
-    void refreshWindowCounts();
   } catch (e) {
     toast(t("toast.openFail", { e }), true);
   }
 }
 
 /**
- * 为同一站点再开一个窗口（不聚焦已有窗口）。
- * 窗口共享同一份 cookie / 登录态，所以新窗口打开就是当前登录身份（同一账号多开）。
+ * 后端窗口快照：设置页只用它显示「运行中 N」，不在这里做任何窗口操作。
+ * 站点窗口的新建 / 隐藏 / 销毁 / 焦点切换都会推 windows-changed，
+ * 比旧版「设置页重新拿到焦点时轮询一次」实时得多。
  */
-async function openSiteNewWindow(id) {
-  if (!id) {
-    toast(t("toast.fillUrl"), true);
-    return;
-  }
-  toast(t("toast.opening"));
-  try {
-    await invoke("new_site_window", { id });
-    void refreshWindowCounts();
-  } catch (e) {
-    toast(t("toast.openFail", { e }), true);
-  }
+function applyDockState(snapshot) {
+  if (!snapshot) return;
+  state.dockPinned = !!snapshot.pinned;
+  state.windows = Array.isArray(snapshot.windows) ? snapshot.windows : [];
+  renderList();
 }
 
-/**
- * 刷新各站点已开的窗口数（后端查询）。窗口是用户在站点窗那边开关的，
- * 设置页这边只能在自己重新拿到焦点时、以及开/关窗口之后主动问一次。
- */
-async function refreshWindowCounts() {
+/** 启动时取一次快照，之后完全靠 windows-changed 事件推送刷新。 */
+async function subscribeDockState() {
   if (!ENABLED) return;
   try {
-    state.windowCounts = (await invoke("site_window_counts")) || {};
-    renderList();
+    applyDockState(await invoke("get_dock_state"));
   } catch (e) {
-    /* 查不到就当没有窗口，不影响其它功能 */
+    /* 后端未就绪时保持空列表，不影响配置功能 */
   }
-}
-
-/**
- * 彻底关闭该站点的全部窗口（销毁 WebView、回收内存）。
- * 「隐藏到托盘继续保活」是另一回事：用站点窗口标题条的 × 或托盘左键。
- */
-async function closeSiteWindows(id) {
-  if (!id) return;
-  if (!(state.windowCounts[id] || 0)) return;
   try {
-    const closed = await invoke("close_site_windows", { siteId: id });
-    toast(t("toast.windowsClosed", { n: closed }));
+    if (tauri.event && typeof tauri.event.listen === "function") {
+      await tauri.event.listen("windows-changed", (ev) => applyDockState(ev.payload));
+    }
   } catch (e) {
-    toast(t("toast.closeWinFail", { e }), true);
+    /* 事件权限不可用时至少保留初始快照 */
   }
-  refreshWindowCounts();
 }
 
 async function removeSite(i) {
   const target = state.sites[i];
   // 站点名下还有窗口时说清楚：后端会连同这些窗口一起销毁。
   // 不销毁的话它们会变成孤儿（托盘的「彻底关闭」对该站点全部置灰 = 再也关不掉）。
-  const winCount = state.windowCounts[target.id] || 0;
+  const winCount = runningCount(target.id);
   const message = winCount
     ? t("confirm.deleteWithWindows", { name: target.name || target.url, n: winCount })
     : t("confirm.delete", { name: target.name || target.url });
@@ -358,7 +348,6 @@ async function removeSite(i) {
     state.sites = await invoke("save_config", { sites });
     renderStatus();
     startNew();
-    void refreshWindowCounts();
     toast(t("toast.deleted"));
   } catch (e) {
     toast(t("toast.deleteFail", { e }), true);
@@ -477,8 +466,8 @@ async function load() {
     renderList();
     renderForm();
     renderRenderSection();
-    // 已开窗口数不在配置里，单独查一次（拿不到就当作没有窗口）。
-    void refreshWindowCounts();
+    // 运行中的窗口不在配置里：取一次快照后订阅 windows-changed 事件。
+    void subscribeDockState();
   } catch (e) {
     toast(t("toast.loadFail", { e }), true);
   }
@@ -726,12 +715,6 @@ if (!ENABLED) {
     el(id).disabled = true;
   });
 }
-
-// 设置窗重新拿到焦点时刷新「已开窗口数」：窗口是用户在站点窗那边开关的，
-// 只有这时才需要重新问后端（后端查的是真实窗口表）。
-window.addEventListener("focus", () => {
-  void refreshWindowCounts();
-});
 
 // 启动：先应用当前语言的静态文案（含窗口标题），再初始化语言切换器与动态区域。
 applyI18n();

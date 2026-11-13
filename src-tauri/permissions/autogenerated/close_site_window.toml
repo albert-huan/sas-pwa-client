@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-close-site-window"
+description = "Enables the close_site_window command without any pre-configured scope."
+commands.allow = ["close_site_window"]
+
+[[permission]]
+identifier = "deny-close-site-window"
+description = "Denies the close_site_window command without any pre-configured scope."
+commands.deny = ["close_site_window"]

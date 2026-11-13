@@ -7,7 +7,11 @@ export default defineConfig({
   root: "src",
   clearScreen: false,
   server: {
-    port: 1420,
+    // 别用 Tauri 模板默认的 1420：Windows 上 Hyper-V / WSL 会动态保留 1348–1447
+    // 这类端口段，落在里面时 vite 绑定 ::1:1420 会报 EACCES: permission denied
+    // （不是端口被占用，netstat 查不到任何监听）。5173 不在保留段内。
+    // 排查：netsh interface ipv4 show excludedportrange protocol=tcp
+    port: 5173,
     strictPort: true,
     watch: { ignored: ["**/src-tauri/**"] },
   },

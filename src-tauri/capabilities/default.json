@@ -22,6 +22,7 @@
     "allow-new-site-window",
     "allow-close-site-windows",
     "allow-site-window-counts",
+    "allow-get-dock-state",
     "allow-hide-settings",
     "allow-set-render-mode",
     "allow-set-ui-theme",

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hide-site-window"
+description = "Enables the hide_site_window command without any pre-configured scope."
+commands.allow = ["hide_site_window"]
+
+[[permission]]
+identifier = "deny-hide-site-window"
+description = "Denies the hide_site_window command without any pre-configured scope."
+commands.deny = ["hide_site_window"]

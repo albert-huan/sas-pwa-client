@@ -1,6 +1,6 @@
 fn main() {
     // 生产构建必须启用 `custom-protocol`（Tauri CLI 会自动加）。
-    // 缺少它时 Tauri 的 `cfg(dev)` 为真，设置窗口会加载 `build.devUrl`（localhost:1420）→
+    // 缺少它时 Tauri 的 `cfg(dev)` 为真，设置窗口会加载 `build.devUrl`（localhost:5173）→
     // ERR_CONNECTION_REFUSED。这里只给告警（不 panic），避免影响 `tauri build`。
     if std::env::var("PROFILE").as_deref() == Ok("release")
         && std::env::var_os("CARGO_FEATURE_CUSTOM_PROTOCOL").is_none()
@@ -8,7 +8,7 @@ fn main() {
         println!(
             "cargo:warning=release 构建未启用 custom-protocol：请改用 `npm run tauri build` \
              或 `cargo build --release --features custom-protocol`，否则运行时会按 dev 模式 \
-             去加载 localhost:1420。"
+             去加载 localhost:5173。"
         );
     }
 
@@ -36,6 +36,15 @@ fn main() {
             "get_credential",
             "save_credential",
             "clear_credential",
+            // 悬浮窗口栏（只操作运行中的窗口，不碰站点配置）。
+            "get_dock_state",
+            "set_dock_pinned",
+            "set_dock_prefs",
+            "focus_site_window",
+            "hide_site_window",
+            "close_site_window",
+            "reload_site_window",
+            "new_window_for_current",
         ]),
     );
     if let Err(e) = tauri_build::try_build(attrs) {
