@@ -201,6 +201,18 @@
           "markdownDescription": "Enables the close_window command without any pre-configured scope."
         },
         {
+          "description": "Enables the dock_fit command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-dock-fit",
+          "markdownDescription": "Enables the dock_fit command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the dock_set_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-dock-set-open",
+          "markdownDescription": "Enables the dock_set_open command without any pre-configured scope."
+        },
+        {
           "description": "Enables the focus_site_window command without any pre-configured scope.",
           "type": "string",
           "const": "allow-focus-site-window",
@@ -309,16 +321,34 @@
           "markdownDescription": "Enables the set_ui_theme command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_window_alias command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-window-alias",
+          "markdownDescription": "Enables the set_window_alias command without any pre-configured scope."
+        },
+        {
           "description": "Enables the show_settings command without any pre-configured scope.",
           "type": "string",
           "const": "allow-show-settings",
           "markdownDescription": "Enables the show_settings command without any pre-configured scope."
         },
         {
+          "description": "Enables the show_site_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-show-site-window",
+          "markdownDescription": "Enables the show_site_window command without any pre-configured scope."
+        },
+        {
           "description": "Enables the site_window_counts command without any pre-configured scope.",
           "type": "string",
           "const": "allow-site-window-counts",
           "markdownDescription": "Enables the site_window_counts command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the toggle_dock command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-toggle-dock",
+          "markdownDescription": "Enables the toggle_dock command without any pre-configured scope."
         },
         {
           "description": "Enables the toggle_frameless command without any pre-configured scope.",
@@ -349,6 +379,18 @@
           "type": "string",
           "const": "deny-close-window",
           "markdownDescription": "Denies the close_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the dock_fit command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-dock-fit",
+          "markdownDescription": "Denies the dock_fit command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the dock_set_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-dock-set-open",
+          "markdownDescription": "Denies the dock_set_open command without any pre-configured scope."
         },
         {
           "description": "Denies the focus_site_window command without any pre-configured scope.",
@@ -459,16 +501,34 @@
           "markdownDescription": "Denies the set_ui_theme command without any pre-configured scope."
         },
         {
+          "description": "Denies the set_window_alias command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-window-alias",
+          "markdownDescription": "Denies the set_window_alias command without any pre-configured scope."
+        },
+        {
           "description": "Denies the show_settings command without any pre-configured scope.",
           "type": "string",
           "const": "deny-show-settings",
           "markdownDescription": "Denies the show_settings command without any pre-configured scope."
         },
         {
+          "description": "Denies the show_site_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-show-site-window",
+          "markdownDescription": "Denies the show_site_window command without any pre-configured scope."
+        },
+        {
           "description": "Denies the site_window_counts command without any pre-configured scope.",
           "type": "string",
           "const": "deny-site-window-counts",
           "markdownDescription": "Denies the site_window_counts command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the toggle_dock command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-toggle-dock",
+          "markdownDescription": "Denies the toggle_dock command without any pre-configured scope."
         },
         {
           "description": "Denies the toggle_frameless command without any pre-configured scope.",

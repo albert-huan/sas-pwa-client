@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "本地内容（设置窗口）的权限：窗口显隐/最小化/拖拽/DevTools + 全部应用命令（含凭据读写）。**只覆盖本地内容**：远程 SAS 页面（https/http）走的是 remote-sites.json 那套最小权限，所以这里不要列 site-* 窗口（多份 capability 是按并集生效的，写上去等于把 core:default 送给远程页面），也不要给 core:window:allow-close —— 站点窗口的关闭语义是「隐藏到托盘」，把 close() 交给页面后会被 prevent_close 吞掉，表现为按钮点了没反应。",
-  "windows": ["settings"],
+  "windows": ["settings", "dock"],
   "local": true,
   "permissions": [
     "core:default",
@@ -32,6 +32,23 @@
     "allow-toggle-frameless",
     "allow-get-credential",
     "allow-save-credential",
-    "allow-clear-credential"
+    "allow-clear-credential",
+    "allow-get-dock-state",
+    "allow-set-dock-pinned",
+    "allow-set-dock-prefs",
+    "allow-focus-site-window",
+    "allow-hide-site-window",
+    "allow-show-site-window",
+    "allow-set-window-alias",
+    "allow-close-site-window",
+    "allow-reload-site-window",
+    "allow-new-window-for-current",
+    "allow-dock-fit",
+    "allow-dock-set-open",
+    "allow-toggle-dock",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:event:allow-listen"
   ]
 }

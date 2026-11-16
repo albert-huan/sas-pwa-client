@@ -4,6 +4,7 @@
 // 与程序（exe）名称保持一致，方便按程序名直接找到配置；
 // 不沿用 Tauri 默认的 %APPDATA%/<identifier>/。不需要任何文件系统插件。
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -109,6 +110,11 @@ pub struct DockPrefs {
     pub opacity: f64,
     /// 贴边时收起后完全隐藏，鼠标靠近原位置再显示。
     pub edge_hide: bool,
+    /// 窗口别名映射：窗口标签（site-<id>[-n]）→ 用户起的别名。别名只影响显示
+    /// （悬浮栏 chip / 任务栏标题），不参与归属判断。BTreeMap 保证 dock.json 里的
+    /// 键序稳定，diff 友好。
+    #[serde(default)]
+    pub aliases: BTreeMap<String, String>,
 }
 
 impl Default for DockPrefs {
@@ -124,6 +130,7 @@ impl Default for DockPrefs {
             accent: "#7aa8ff".to_string(),
             opacity: 0.94,
             edge_hide: true,
+            aliases: BTreeMap::new(),
         }
     }
 }
@@ -160,6 +167,21 @@ impl DockPrefs {
         } else {
             d.opacity
         };
+        // 别名：只保留站点窗口标签，值 trim 后截到 24 个字符；空别名即删除该条。
+        if self.aliases.len() > 200 {
+            self.aliases.clear();
+        }
+        self.aliases.retain(|k, v| {
+            if !k.starts_with("site-") {
+                return false;
+            }
+            let t = v.trim().chars().take(24).collect::<String>();
+            if t.is_empty() {
+                return false;
+            }
+            *v = t;
+            true
+        });
         self
     }
 }
@@ -421,6 +443,7 @@ fn unique_id(base: &str, used: &mut Vec<String>) -> String {
 #[cfg(test)]
 mod dock_prefs_tests {
     use super::DockPrefs;
+    use std::collections::BTreeMap;
 
     #[test]
     fn sanitize_clamps_and_rejects_bad_values() {
@@ -433,6 +456,7 @@ mod dock_prefs_tests {
             accent: "#12345".into(),
             opacity: 0.0,
             edge_hide: true,
+            aliases: BTreeMap::new(),
         }
         .sanitize();
         let d = DockPrefs::default();

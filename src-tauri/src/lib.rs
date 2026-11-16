@@ -17,6 +17,7 @@ mod config;
 mod credentials;
 mod hotkey;
 mod permissions;
+mod dockwin;
 mod taskbar;
 
 use std::collections::HashMap;
@@ -35,7 +36,6 @@ const TRAY_ID: &str = "main-tray";
 
 /// 注入到每个站点窗口的「悬浮窗口栏」脚本（独立文件，别再往 lib.rs 里堆 JS 字符串）。
 /// 占位符由 `render_script` 替换：当前窗口标签、界面语言。
-const DOCK_SCRIPT: &str = include_str!("../scripts/dock.js");
 
 /// 悬浮栏是否钉住。全局一份，所有站点窗口通过 windows-changed 事件保持一致；
 /// 纯 UI 状态、会话内有效，重启回到默认的「自动隐藏」，不写进 config.json。
@@ -210,16 +210,15 @@ const SAS_INIT_SCRIPT: &str = r#"
         catch(err){ console.error('[SAS PWA] F11', err); }
       }
     }, true);
-    // Ctrl+` / Cmd+`：唤出或收起顶部居中的悬浮窗口栏。
-    // Windows 上原生键盘钩子会吞掉这个键、由 Rust 直接 eval __sasToggleDock()；
-    // 这里主要覆盖 Linux 以及钩子安装失败的情况（与 F11 同样的双保险）。
+    // Ctrl+` / Cmd+`：唤出或收起悬浮窗口栏。Windows 上原生钩子会先吞掉这个键；
+    // 这里是 Linux 与钩子安装失败时的兜底，直接调 Rust 命令 toggle_dock。
     window.addEventListener('keydown', function(e){
       if (!(e.ctrlKey || e.metaKey)) return;
       if (e.code !== 'Backquote' && e.key !== '`' && e.key !== '~') return;
       e.preventDefault();
       e.stopPropagation();
       if (e.repeat) return;
-      try { if (window.__sasToggleDock) window.__sasToggleDock(); } catch(err){}
+      try { window.__TAURI__.core.invoke('toggle_dock'); } catch(err){}
     }, true);
     console.log('[SAS PWA] ready');
   } catch(e){ console.error('[SAS PWA] error', e); }
@@ -330,6 +329,8 @@ struct WindowInfo {
     site_id: String,
     site_name: String,
     title: String,
+    /// 用户起的别名（dock.json 的 aliases 映射），没有别名为空串。
+    alias: String,
     index: usize,
     /// 与任务栏图标同源的站点配色（复用 site_color 的 FNV 哈希）。
     color: String,
@@ -349,6 +350,7 @@ struct DockState {
 fn dock_state(app: &tauri::AppHandle) -> DockState {
     let sites = cfg_state().lock().unwrap().sites.clone();
     let active = active_window().lock().unwrap().clone();
+    let aliases = dock_prefs(app).lock().unwrap().aliases.clone();
     let mut order = HashMap::new();
     for (i, s) in sites.iter().enumerate() {
         order.insert(s.id.clone(), i);
@@ -366,9 +368,13 @@ fn dock_state(app: &tauri::AppHandle) -> DockState {
             .map(|s| s.name.clone())
             .unwrap_or_else(|| site_id.clone());
         let index = window_index(&label, &site_id);
-        let title = site
-            .map(|s| window_title(s, &label))
-            .unwrap_or_else(|| format!("{site_name} ({index})"));
+        let alias = aliases.get(&label).cloned().unwrap_or_default();
+        let title = if alias.is_empty() {
+            site.map(|s| window_title(s, &label))
+                .unwrap_or_else(|| format!("{site_name} ({index})"))
+        } else {
+            alias.clone()
+        };
         let (r, g, b) = site_color(&site_id);
         rows.push((
             *order.get(&site_id).unwrap_or(&usize::MAX),
@@ -378,6 +384,7 @@ fn dock_state(app: &tauri::AppHandle) -> DockState {
                 site_id,
                 site_name,
                 title,
+                alias,
                 index,
                 color: format!("#{r:02x}{g:02x}{b:02x}"),
                 visible: w.is_visible().unwrap_or(false),
@@ -397,6 +404,10 @@ fn dock_state(app: &tauri::AppHandle) -> DockState {
 /// 取代旧版「设置页拿到焦点时轮询 site_window_counts」的滞后做法。
 fn emit_windows_changed(app: &tauri::AppHandle) {
     let _ = app.emit("windows-changed", dock_state(app));
+    // 悬浮窗口跟随站点窗口的显隐：有可见站点窗口时显示，全部隐藏到托盘时一起隐藏。
+    // 放后台线程做，避免在 WebView 回调里改窗口。
+    let h = app.clone();
+    std::thread::spawn(move || dockwin::sync(&h));
 }
 
 /// 打开站点时优先聚焦「最近用过的那个窗口」，其次取序号最小的。
@@ -419,6 +430,22 @@ fn window_title(site: &Site, label: &str) -> String {
         site.name.clone()
     } else {
         format!("{} ({n})", site.name)
+    }
+}
+
+/// 窗口显示标题：有别名用别名（悬浮栏 chip / 任务栏 / 自绘标题条一致），否则用默认标题。
+fn window_display_title(app: &tauri::AppHandle, site: &Site, label: &str) -> String {
+    let alias = dock_prefs(app)
+        .lock()
+        .unwrap()
+        .aliases
+        .get(label)
+        .cloned()
+        .unwrap_or_default();
+    if alias.is_empty() {
+        window_title(site, label)
+    } else {
+        alias
     }
 }
 
@@ -993,16 +1020,9 @@ fn render_script(app: &tauri::AppHandle, site: &Site, label: &str) -> String {
         .replace("__CRED_USER__", &js_string(&user))
         .replace("__CRED_PASS__", &js_string(&password))
         .replace("__CRED_AUTO__", if auto_login { "true" } else { "false" });
-    // 悬浮栏需要知道「我是哪个窗口」和界面语言；语言跟设置页用同一个系统语言判定。
-    let lang = if system_lang_tag().to_ascii_lowercase().starts_with("zh") {
-        "zh"
-    } else {
-        "en"
-    };
-    let dock = DOCK_SCRIPT
-        .replace("__DOCK_LABEL__", &js_string(label))
-        .replace("__DOCK_LANG__", &js_string(lang));
-    format!("{init}\n{dock}")
+    // 悬浮窗口栏已改为独立窗口（见 dockwin.rs），站点页面不再注入胶囊脚本；label 目前不再需要。
+    let _ = label;
+    format!("{init}")
 }
 
 /// 日志滚动阈值：单个 debug.log 超过它就挪成 `debug.log.1` 重新写。
@@ -1072,7 +1092,7 @@ fn apply_frameless(app: &tauri::AppHandle, site: &Site) {
             let script = format!(
                 "if(window.__sasShowFramelessBar)window.__sasShowFramelessBar({}, {});",
                 site.frameless,
-                js_string(&window_title(site, &label))
+                js_string(&window_display_title(app, site, &label))
             );
             let _ = w.eval(&script);
         }
@@ -1144,8 +1164,8 @@ fn create_site_window(
     // 是否允许在这个站点窗口里打开 DevTools。默认关闭，理由见 `AppConfig::dev_tools`：
     // 窗口里跑的是远程 SAS 页面，开着 DevTools 等于把注入脚本里的登录凭据摆出来。
     let dev_tools = cfg_state().lock().unwrap().dev_tools;
-    // 同一站点的第 2 个窗口起标题带序号，任务栏里能区分。
-    let title = window_title(site, label);
+    // 同一站点的第 2 个窗口起标题带序号，任务栏里能区分；有别名则直接用别名。
+    let title = window_display_title(app, site, label);
     log_line(app, &format!("creating {label} -> {target}"));
 
     // 防白屏：窗口先隐藏创建，等页面真正加载完成（on_page_load Finished）再显示，
@@ -1899,6 +1919,58 @@ async fn hide_site_window(app: tauri::AppHandle, label: String) -> Result<(), St
     Ok(())
 }
 
+/// 显示（唤回）指定窗口：从托盘隐藏状态恢复并聚焦。
+#[tauri::command]
+async fn show_site_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    if !label.starts_with(WINDOW_PREFIX) {
+        return Err("只能显示 SAS 站点窗口".to_string());
+    }
+    let w = app
+        .get_webview_window(&label)
+        .ok_or_else(|| "窗口已不存在".to_string())?;
+    w.show().map_err(|e| e.to_string())?;
+    let _ = w.unminimize();
+    focus_window(&app, &label);
+    let _ = refresh_tray(&app);
+    emit_windows_changed(&app);
+    Ok(())
+}
+
+/// 重命名窗口：给窗口标签起别名（存 dock.json 的 aliases 映射），空串 / 纯空白表示清除别名。
+/// 别名只影响显示（悬浮栏 chip、任务栏标题、自绘标题条），不参与窗口归属判断。
+#[tauri::command]
+async fn set_window_alias(
+    app: tauri::AppHandle,
+    label: String,
+    alias: String,
+) -> Result<DockState, String> {
+    if !label.starts_with(WINDOW_PREFIX) {
+        return Err("只能重命名 SAS 站点窗口".to_string());
+    }
+    let a: String = alias.trim().chars().take(24).collect();
+    let prefs = {
+        let mut g = dock_prefs(&app).lock().unwrap();
+        if a.is_empty() {
+            g.aliases.remove(&label);
+        } else {
+            g.aliases.insert(label.clone(), a.clone());
+        }
+        g.clone()
+    };
+    let _ = config::save_dock_prefs(&app, &prefs);
+    // 窗口还在的话同步任务栏标题；自绘标题条（无边框站点）也立即刷新文案。
+    if let Some(site) = site_id_of_label(&label).and_then(|id| get_site(&id)) {
+        if site.frameless {
+            apply_frameless(&app, &site);
+        }
+        if let Some(w) = app.get_webview_window(&label) {
+            let _ = w.set_title(&window_display_title(&app, &site, &label));
+        }
+    }
+    emit_windows_changed(&app);
+    Ok(dock_state(&app))
+}
+
 /// 彻底关闭指定窗口（销毁 WebView、释放内存）。
 #[tauri::command]
 async fn close_site_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
@@ -1922,11 +1994,12 @@ async fn reload_site_window(app: tauri::AppHandle, label: String) -> Result<(), 
     Ok(())
 }
 
-/// 「+ 新建当前站点窗口」：站点 id 从调用窗口推断，前端不必（也不该）传 id。
+/// 「+ 新建当前站点窗口」：站点取当前激活的站点窗口（悬浮栏是独立窗口，调用方不是站点窗口）。
 #[tauri::command]
-async fn new_window_for_current(app: tauri::AppHandle, window: tauri::Window) -> Result<(), String> {
-    let id = site_id_of_label(window.label())
-        .ok_or_else(|| "只有 SAS 站点窗口才能新建窗口".to_string())?;
+async fn new_window_for_current(app: tauri::AppHandle) -> Result<(), String> {
+    let label = active_window().lock().unwrap().clone();
+    let id = site_id_of_label(&label)
+        .ok_or_else(|| "没有激活的站点窗口".to_string())?;
     create_new_site_window(&app, &id)
 }
 
@@ -2003,10 +2076,8 @@ fn hotkey_trigger(app: &tauri::AppHandle, window_label: &str, action: hotkey::Ac
             }
         }
         hotkey::Action::ToggleDock => {
-            // 钩子吞掉了按键，页面收不到 keydown：直接让该窗口的悬浮栏切换显隐。
-            if let Some(w) = app.get_webview_window(window_label) {
-                let _ = w.eval("if(window.__sasToggleDock)window.__sasToggleDock();");
-            }
+            // 悬浮栏是独立窗口：转给它切换显隐。
+            dockwin::toggle(app);
         }
     }
 }
@@ -2181,8 +2252,13 @@ pub fn run() {
             get_dock_state,
             set_dock_pinned,
             set_dock_prefs,
+            dockwin::dock_fit,
+            dockwin::dock_set_open,
+            dockwin::toggle_dock,
             focus_site_window,
             hide_site_window,
+            show_site_window,
+            set_window_alias,
             close_site_window,
             reload_site_window,
             new_window_for_current,
@@ -2232,6 +2308,21 @@ pub fn run() {
             }
 
             let _ = build_tray_at_startup(app.handle());
+
+            // 悬浮窗口栏：独立窗口。和站点窗口一样必须在主线程之外直接创建
+            // （不能 run_on_main_thread，理由见文件里的【关键规则】）。
+            // 创建请求入队，等事件循环跑起来后才会真正执行。
+            {
+                let h = app.handle().clone();
+                std::thread::spawn(move || match dockwin::create(&h) {
+                    Ok(()) => {
+                        log_line(&h, "dock window created");
+                        // 站点窗口可能比悬浮窗口先显示出来，之前的同步已经错过了，这里补一次。
+                        dockwin::sync(&h);
+                    }
+                    Err(e) => log_line(&h, &format!("dock window create failed: {e}")),
+                });
+            }
 
             // 站点窗口的 F11：优先交给原生低级键盘钩子（WebView2 会把 F11 当浏览器
             // 加速键吃掉，页面里的 keydown 不一定收得到）。装不上时工具栏里的注入脚本兜底。
@@ -2369,6 +2460,10 @@ pub fn run() {
                         let _ = refresh_tray(&app);
                         emit_windows_changed(&app);
                     });
+                }
+                // 悬浮栏窗口被移动（用户拖动）：结束后判断是否吸附到屏幕边缘。
+                tauri::WindowEvent::Moved(_) if window.label() == dockwin::LABEL => {
+                    dockwin::on_moved(window.app_handle());
                 }
                 // 窗口真被销毁（退出前 / 主动 destroy）时清掉注册表，别留着孤儿标签。
                 tauri::WindowEvent::Destroyed => {

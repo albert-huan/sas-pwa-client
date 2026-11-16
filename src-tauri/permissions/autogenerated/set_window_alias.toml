@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-window-alias"
+description = "Enables the set_window_alias command without any pre-configured scope."
+commands.allow = ["set_window_alias"]
+
+[[permission]]
+identifier = "deny-set-window-alias"
+description = "Denies the set_window_alias command without any pre-configured scope."
+commands.deny = ["set_window_alias"]

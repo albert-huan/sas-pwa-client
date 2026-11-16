@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Windows</title>
+  <link rel="stylesheet" href="./dock.css" />
+</head>
+<body>
+  <div class="stage">
+    <div class="dock">
+      <div class="handle" title="">
+        <span class="dots"><i></i><i></i><i></i></span>
+        <span class="n">0</span>
+        <span class="lbl"></span>
+        <svg viewBox="0 0 16 16"><path d="M4 6.2l4 4 4-4"/></svg>
+      </div>
+      <div class="panel">
+        <div class="grip" title=""></div>
+        <div class="brand"><span class="badge">0</span><span class="lbl"></span></div>
+        <div class="chips"></div>
+        <div class="tools">
+          <button class="tool new" type="button"></button>
+          <button class="tool settings" type="button"></button>
+          <button class="tool lookbtn" type="button"></button>
+          <button class="tool pin" type="button"></button>
+          <button class="tool collapse" type="button"></button>
+        </div>
+      </div>
+    </div>
+    <div class="menu"></div>
+    <div class="look"></div>
+    <div class="strip"></div>
+  </div>
+  <script type="module" src="./dock.js"></script>
+</body>
+</html>

@@ -18,5 +18,12 @@ export default defineConfig({
   build: {
     outDir: "../dist",
     emptyOutDir: true,
+    rollupOptions: {
+      // 悬浮窗口栏是独立的本地页面，需要和 index.html 一起打包。
+      input: {
+        index: "src/index.html",
+        dock: "src/dock.html",
+      },
+    },
   },
 });

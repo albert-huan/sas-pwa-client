@@ -1,0 +1,207 @@
+/* 悬浮窗口栏：独立透明窗口的样式。窗口尺寸由 Rust 按内容设置，四周 14px 是阴影的留白。 */
+:root {
+  --fg: #e9eef8;
+  --fg2: #a3afc4;
+  --line: rgba(255, 255, 255, 0.15);
+  --soft: rgba(255, 255, 255, 0.07);
+  --accent: #7aa8ff;
+  --accentSoft: rgba(122, 168, 255, 0.18);
+  --solid: #1b2233;
+  --bgGrad: linear-gradient(180deg, rgba(41, 48, 65, 0.94), rgba(20, 24, 34, 0.94));
+}
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font: 12.5px/1.4 "Segoe UI", system-ui, -apple-system, "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  color: var(--fg);
+  user-select: none;
+  -webkit-user-select: none;
+}
+* { box-sizing: border-box; }
+button { font-family: inherit; }
+svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+.stage { position: fixed; inset: 0; }
+.dock { position: absolute; left: 14px; top: 14px; }
+
+/* 收起态小把手 */
+.handle {
+  display: none;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  background: var(--bgGrad);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.34), inset 0 1px 0 var(--soft);
+  backdrop-filter: blur(14px) saturate(150%);
+  font: 600 11px/1 "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+.handle:hover { border-color: var(--accent); }
+.handle svg { width: 10px; height: 10px; stroke: var(--fg2); }
+.handle .dots { display: flex; gap: 3px; }
+.handle .dots i { width: 6px; height: 6px; border-radius: 50%; display: block; background: var(--accent); }
+.handle .n { color: var(--accent); font-variant-numeric: tabular-nums; }
+.handle .lbl { color: var(--fg2); }
+body:not(.open) .handle { display: flex; }
+
+/* 展开态 */
+.panel {
+  display: none;
+  align-items: center;
+  gap: 9px;
+  width: max-content;
+  max-width: 560px;
+  padding: 6px 7px 6px 3px;
+  border-radius: 15px;
+  background: var(--bgGrad);
+  border: 1px solid var(--line);
+  /* 阴影必须收在窗口的 14px 留白（dockwin.rs 的 MARGIN）以内：窗口之外画不出来，
+     超出的部分会被窗口边界裁成一个方框。偏移 + 模糊半径 ≤ 14。 */
+  box-shadow: 0 3px 9px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2), inset 0 1px 0 var(--soft);
+  backdrop-filter: blur(18px) saturate(150%);
+}
+body.open .panel { display: flex; }
+body.pinned .panel { border-color: var(--accent); }
+.grip {
+  width: 16px;
+  align-self: stretch;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  color: var(--fg2);
+  border-radius: 9px;
+  background-image: radial-gradient(circle, currentColor 0.9px, transparent 1.1px);
+  background-size: 5px 5px;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 6px 12px;
+  opacity: 0.8;
+}
+.grip:hover { background-color: var(--soft); opacity: 1; }
+.brand { display: flex; align-items: center; gap: 6px; flex: none; }
+.brand .badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 23px; height: 22px; padding: 0 6px; border-radius: 7px;
+  background: var(--accentSoft); color: var(--accent);
+  font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.brand .lbl { font-size: 11px; color: var(--fg2); font-weight: 600; }
+.chips {
+  display: flex; align-items: center; gap: 8px;
+  flex: 0 1 auto; min-width: 0; max-width: 300px;
+  overflow-x: auto; padding: 2px 1px 4px; scrollbar-width: none;
+}
+.chips::-webkit-scrollbar { display: none; }
+.empty { color: var(--fg2); font-size: 11.5px; padding: 3px 8px; white-space: nowrap; }
+.group { display: flex; align-items: center; gap: 4px; flex: none; padding-left: 7px; border-left: 1px solid var(--line); }
+.group:first-child { padding-left: 0; border-left: 0; }
+.gdot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: 0 0 0 3px var(--soft); }
+.gname { font-size: 10.5px; color: var(--fg2); max-width: 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip {
+  display: flex; align-items: center; justify-content: center;
+  min-width: 23px; height: 23px; padding: 0 6px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--soft); color: var(--fg);
+  font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+  cursor: pointer; flex: none;
+  transition: transform 0.15s, background 0.15s, border-color 0.15s;
+}
+.chip:hover { transform: translateY(-1px); border-color: var(--accent); }
+.chip.self { color: #fff; border-color: transparent; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3), inset 0 0 0 1px rgba(255, 255, 255, 0.22); }
+.chip.hidden { border-style: dashed; color: var(--fg2); background: transparent; }
+.chip.alias { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.sel { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tools { display: flex; align-items: center; gap: 2px; flex: none; padding-left: 7px; border-left: 1px solid var(--line); }
+.tool {
+  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  border-radius: 8px; border: 1px solid transparent; background: transparent;
+  color: var(--fg2); cursor: pointer; padding: 0;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.tool:hover { background: var(--soft); color: var(--fg); }
+.tool.on { color: var(--accent); background: var(--accentSoft); border-color: var(--accent); }
+.tool svg { width: 14px; height: 14px; }
+
+/* 文字与图标的对比保护：透明背景下，文字和图标加一圈主题底色光晕 */
+.panel, .handle { text-shadow: 0 0 2px var(--solid), 0 0 4px var(--solid), 0 0 7px var(--solid); }
+.panel svg, .handle svg { filter: drop-shadow(0 0 1.5px var(--solid)) drop-shadow(0 0 4px var(--solid)); }
+.chip.self { text-shadow: none; }
+
+/* 浮层：实心底，不随透明度变化 */
+.menu, .look {
+  position: absolute; display: none; border-radius: 11px;
+  background: var(--solid); border: 1px solid var(--line); color: var(--fg);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), inset 0 1px 0 var(--soft);
+}
+.menu.show, .look.show { display: block; }
+.menu { min-width: 176px; padding: 5px; }
+.menu .mt {
+  font-size: 10px; color: var(--fg2); padding: 4px 9px 6px; margin-bottom: 4px;
+  border-bottom: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.menu button {
+  display: block; width: 100%; padding: 7px 9px; border: 0; border-radius: 7px;
+  background: transparent; color: var(--fg); font-size: 11.5px; line-height: 1.3;
+  text-align: left; cursor: pointer;
+}
+.menu button:hover { background: var(--soft); }
+.menu button.danger { color: #ff7a70; }
+.menu .rrow { display: flex; align-items: center; gap: 6px; padding: 2px 3px 3px 5px; }
+.menu .rin {
+  flex: 1; min-width: 0; padding: 6px 8px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--soft); color: var(--fg);
+  font: inherit; outline: none;
+}
+.menu .rin:focus { border-color: var(--accent); }
+.menu .rin::placeholder { color: var(--fg2); }
+.menu .rok {
+  flex: none; padding: 6px 12px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--accent); background: var(--accentSoft); color: var(--accent);
+  font: inherit;
+}
+.menu .rok:hover { background: var(--accent); color: var(--solid); }
+.look { width: 236px; padding: 10px 11px 11px; }
+.look h4 { margin: 0 0 6px; font-size: 10.5px; color: var(--fg2); letter-spacing: 0.4px; font-weight: 600; }
+.look .sec { margin-bottom: 10px; }
+.look .sec:last-child { margin-bottom: 0; }
+.sw { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.sw button {
+  height: 30px; padding: 0; border-radius: 8px; border: 2px solid transparent; cursor: pointer;
+  position: relative; overflow: hidden; background: var(--b); box-shadow: inset 0 0 0 1px var(--line);
+}
+.sw button::after {
+  content: ""; position: absolute; right: 3px; bottom: 3px; width: 9px; height: 9px;
+  border-radius: 50%; background: var(--a);
+}
+.sw button.custom { background: conic-gradient(#ff6b6b, #ffd166, #5fd3a0, #7aa8ff, #b392ff, #ff6b6b); }
+.sw button.custom::after { display: none; }
+.sw button.on { border-color: var(--accent); }
+.tname { margin-top: 5px; font-size: 11px; color: var(--fg2); }
+.row { display: flex; align-items: center; gap: 8px; }
+.row input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); margin: 0; }
+.row .val { width: 34px; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--fg2); }
+.colors { display: flex; gap: 10px; margin-top: 8px; }
+.colors label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg2); flex: 1; }
+.colors input[type=color] {
+  width: 34px; height: 24px; padding: 0; border: 1px solid var(--line); border-radius: 6px;
+  background: transparent; cursor: pointer;
+}
+.chk { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--fg); cursor: pointer; }
+.chk input { accent-color: var(--accent); margin: 0; }
+.link { margin-top: 9px; padding: 0; border: 0; background: none; color: var(--accent); font-size: 11.5px; cursor: pointer; }
+.link:hover { text-decoration: underline; }
+
+/* 贴顶收起后的极窄条：整窗口只剩它，鼠标靠近即展开 */
+.strip { position: absolute; inset: 0; display: none; border-radius: 0 0 10px 10px; background: transparent; }
+body.strip .strip { display: block; }
+body.strip .dock, body.strip .menu, body.strip .look { display: none; }

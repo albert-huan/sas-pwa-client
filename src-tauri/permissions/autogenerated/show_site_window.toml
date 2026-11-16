@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-show-site-window"
+description = "Enables the show_site_window command without any pre-configured scope."
+commands.allow = ["show_site_window"]
+
+[[permission]]
+identifier = "deny-show-site-window"
+description = "Denies the show_site_window command without any pre-configured scope."
+commands.deny = ["show_site_window"]
