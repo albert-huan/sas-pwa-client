@@ -70,8 +70,10 @@ jobs:
             - 想看到报错就前台运行：`sas-pwa-client`；版本号显示在客户端「设置」窗口
           releaseDraft: ${{ github.event_name == 'workflow_dispatch' }}
           prerelease: false
-          # tauri-action 会自动执行 beforeBuildCommand (npm run build) 与 release 构建
-          args: ""
+          # tauri-action 会自动执行 beforeBuildCommand (npm run build) 与 release 构建。
+          # 显式启用 custom-protocol：本机实测 CLI 自动加该 feature 不可靠，缺了会
+          # 让生产包按 dev 模式去加载 localhost:5173，白屏。
+          args: "--features custom-protocol"
           # 仅构建 release 产物（默认 true）
           includeRelease: true
           # 额外上传原始 exe 作为便携版（无需安装，直接运行）
@@ -156,7 +158,7 @@ jobs:
           prerelease: false
           # 仅构建 deb：本机 Tauri CLI 的 --bundles 枚举被写成只接受 msi/nsis（Windows 目标），
           # 在 Linux 上直接传 --bundles deb 会被 clap 拒绝，故改用 --config 内联覆盖 targets。
-          args: "--config {\"bundle\":{\"targets\":[\"deb\"]}}"
+          args: "--config {\"bundle\":{\"targets\":[\"deb\"]}} --features custom-protocol"
           includeRelease: true
           # Linux 不上传裸二进制，只上传 .deb 包
           uploadPlainBinary: false
