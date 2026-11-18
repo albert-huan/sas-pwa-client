@@ -47,6 +47,7 @@ fn main() {
             "hide_site_window",
             "show_site_window",
             "set_window_alias",
+            "toggle_frameless_for_label",
             "close_site_window",
             "reload_site_window",
             "new_window_for_current",

@@ -12,6 +12,7 @@ const TEXT = ZH ? {
   pin: "钉住（常驻显示）", unpin: "取消钉住（自动隐藏）", collapse: "收起",
   hide: "隐藏到托盘（保持会话）", reload: "重新加载此窗口", close: "彻底关闭此窗口",
   rename: "重命名窗口", aliasPh: "别名，留空恢复序号", save: "保存",
+  framelessOn: "启用无边框", framelessOff: "恢复系统标题栏",
   theme: "主题", opacity: "透明度", bg: "底色", accent: "强调色",
   edgeHide: "贴边时自动隐藏", reset: "重置位置", grip: "拖动", tip: "按住左侧点阵可拖动",
   themes: { midnight: "午夜蓝", graphite: "石墨", forest: "松针", dusk: "暮紫", paper: "纸白", custom: "自定义" },
@@ -21,6 +22,7 @@ const TEXT = ZH ? {
   pin: "Pin (keep visible)", unpin: "Unpin (auto-hide)", collapse: "Collapse",
   hide: "Hide to tray (keep session)", reload: "Reload this window", close: "Close this window",
   rename: "Rename window", aliasPh: "Alias, empty to reset", save: "Save",
+  framelessOn: "Frameless mode", framelessOff: "Restore title bar",
   theme: "Theme", opacity: "Opacity", bg: "Background", accent: "Accent",
   edgeHide: "Auto-hide at screen edge", reset: "Reset position", grip: "Drag", tip: "Drag the grip to move",
   themes: { midnight: "Midnight", graphite: "Graphite", forest: "Pine", dusk: "Dusk", paper: "Paper", custom: "Custom" },
@@ -289,6 +291,7 @@ function showMenu(ev, w) {
     { text: TEXT.show, cmd: "show_site_window", when: !w.visible },
     { text: TEXT.hide, cmd: "hide_site_window" },
     { text: TEXT.rename, cmd: "rename" },
+    { text: w.frameless ? TEXT.framelessOff : TEXT.framelessOn, cmd: "toggle_frameless_for_label" },
     { text: TEXT.reload, cmd: "reload_site_window" },
     { text: TEXT.close, cmd: "close_site_window", danger: true },
   ].filter((a) => a.when !== false).forEach((a) => {
@@ -310,7 +313,7 @@ function showMenu(ev, w) {
   el.menu.classList.add("show");
   fit();
   el.menu.style.left = Math.min(ev.clientX, Math.max(4, el.body.clientWidth - 190)) + "px";
-  el.menu.style.top = Math.min(ev.clientY + 6, Math.max(4, el.body.clientHeight - 170)) + "px";
+  el.menu.style.top = Math.min(ev.clientY + 6, Math.max(4, el.body.clientHeight - 220)) + "px";
 }
 
 // ---------- 重命名：菜单原地换成输入框，回车保存、Esc 取消 ----------
@@ -479,7 +482,7 @@ el.lookBtn.addEventListener("click", () => (lookOpen ? hideLook() : showLook()))
 
 document.addEventListener("click", (e) => {
   if (!el.menu.contains(e.target)) hideMenu();
-  if (!el.look.contains(e.target) && e.target !== el.lookBtn) hideLook();
+  if (!el.look.contains(e.target) && !el.lookBtn.contains(e.target)) hideLook();
 });
 document.addEventListener("contextmenu", (e) => {
   if (!el.menu.contains(e.target)) hideMenu();

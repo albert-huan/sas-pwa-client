@@ -40,6 +40,7 @@
     "allow-hide-site-window",
     "allow-show-site-window",
     "allow-set-window-alias",
+    "allow-toggle-frameless-for-label",
     "allow-close-site-window",
     "allow-reload-site-window",
     "allow-new-window-for-current",

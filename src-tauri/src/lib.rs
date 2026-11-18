@@ -331,6 +331,8 @@ struct WindowInfo {
     title: String,
     /// 用户起的别名（dock.json 的 aliases 映射），没有别名为空串。
     alias: String,
+    /// 该窗口所属站点是否处于无边框（去系统标题栏）外观。
+    frameless: bool,
     index: usize,
     /// 与任务栏图标同源的站点配色（复用 site_color 的 FNV 哈希）。
     color: String,
@@ -368,6 +370,7 @@ fn dock_state(app: &tauri::AppHandle) -> DockState {
             .map(|s| s.name.clone())
             .unwrap_or_else(|| site_id.clone());
         let index = window_index(&label, &site_id);
+        let frameless = site.map(|s| s.frameless).unwrap_or(false);
         let alias = aliases.get(&label).cloned().unwrap_or_default();
         let title = if alias.is_empty() {
             site.map(|s| window_title(s, &label))
@@ -385,6 +388,7 @@ fn dock_state(app: &tauri::AppHandle) -> DockState {
                 site_name,
                 title,
                 alias,
+                frameless,
                 index,
                 color: format!("#{r:02x}{g:02x}{b:02x}"),
                 visible: w.is_visible().unwrap_or(false),
@@ -2091,6 +2095,19 @@ async fn toggle_frameless(app: tauri::AppHandle, window: tauri::Window) -> Resul
     toggle_frameless_for(&app, window.label())
 }
 
+/// 悬浮栏右键菜单：按窗口标签切换无边框外观。
+/// 与 `toggle_frameless` 的区别是后者作用于「调用方窗口」（站点窗口自己按 F11），
+/// 这里必须作用于菜单里选中的那个站点窗口，且切换后把新快照推给悬浮栏刷新菜单文案。
+#[tauri::command]
+async fn toggle_frameless_for_label(
+    app: tauri::AppHandle,
+    label: String,
+) -> Result<bool, String> {
+    let result = toggle_frameless_for(&app, &label)?;
+    emit_windows_changed(&app);
+    Ok(result)
+}
+
 /// 站点窗口自绘标题条的「⚙」：打开设置窗口（走后台线程创建，理由见上方【关键规则】）。
 #[tauri::command]
 async fn show_settings(app: tauri::AppHandle) -> Result<(), String> {
@@ -2259,6 +2276,7 @@ pub fn run() {
             hide_site_window,
             show_site_window,
             set_window_alias,
+            toggle_frameless_for_label,
             close_site_window,
             reload_site_window,
             new_window_for_current,

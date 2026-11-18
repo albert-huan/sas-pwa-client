@@ -357,6 +357,12 @@
           "markdownDescription": "Enables the toggle_frameless command without any pre-configured scope."
         },
         {
+          "description": "Enables the toggle_frameless_for_label command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-toggle-frameless-for-label",
+          "markdownDescription": "Enables the toggle_frameless_for_label command without any pre-configured scope."
+        },
+        {
           "description": "Denies the clear_credential command without any pre-configured scope.",
           "type": "string",
           "const": "deny-clear-credential",
@@ -535,6 +541,12 @@
           "type": "string",
           "const": "deny-toggle-frameless",
           "markdownDescription": "Denies the toggle_frameless command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the toggle_frameless_for_label command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-toggle-frameless-for-label",
+          "markdownDescription": "Denies the toggle_frameless_for_label command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
